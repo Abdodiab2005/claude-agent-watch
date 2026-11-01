@@ -21,7 +21,7 @@ const claude = atom({ plugin: 'agent-watch', key: 'claude' } as const, [], { sha
 const plan = atom({ plugin: 'agent-watch', key: 'plan' } as const, [], { shape: 'plan-1' })
 const subagents = atom({ plugin: 'agent-watch', key: 'subagents' } as const, [], { shape: 'subagents-1' })
 const isNotifying = atom({ plugin: 'agent-watch', key: 'isNotifying' } as const, true)
-const phoneUrl = atom({ plugin: 'agent-watch', key: 'phoneUrl' } as const, null)
+const channels = atom({ plugin: 'agent-watch', key: 'channels' } as const, [], { shape: 'channels-1' })
 
 const CLAUDE_LABELS: Record<string, string> = { five_hour: '5h', seven_day: 'week' }
 
@@ -70,9 +70,16 @@ async function desktop($: EngineInterface, title: string, body: string): Promise
   await $.ui.notify(body, { title }).catch(() => undefined)
 }
 
-// Phone alerts go to an ntfy topic URL, set by /agent-watch-phone and kept in
-// ~/.config/agent-watch/config.json so every session and copy reads it.
-type Config = { ntfyUrl?: string }
+// Phone alerts go to an ntfy topic URL (/agent-watch-phone) and to a Telegram
+// chat (/agent-watch-telegram). Both are kept in
+// ~/.config/agent-watch/config.json so every session and copy reads them. The
+// Telegram bot token is not: it is the manifest's sensitive `telegramBotToken`
+// option, which Claude Code keeps in its secure storage and hands to
+// `register` alone. It lives in this module's memory, goes only into
+// api.telegram.org request URLs, and is never stored, drawn or returned.
+type Config = { ntfyUrl?: string; telegramChatId?: string }
+
+let telegramToken: string | undefined
 
 async function configPath($: EngineInterface): Promise<string | undefined> {
   const home = await $.env.get('HOME').catch(() => undefined)
@@ -103,10 +110,82 @@ async function phone($: EngineInterface, url: string, title: string, body: strin
     .catch(() => false)
 }
 
+type TelegramChat = { id: number; type: string; first_name?: string; title?: string }
+type TelegramReply = {
+  ok: boolean
+  description?: string
+  result?: { username?: string } & Array<{ message?: { chat?: TelegramChat } }>
+}
+
+// Calls the Bot API; an answer that fails says why in Telegram's own words,
+// which never hold the token.
+async function telegramApi($: EngineInterface, method: string, payload: object = {}): Promise<TelegramReply> {
+  if (telegramToken === undefined) return { ok: false, description: 'no bot token' }
+  try {
+    const response = await $.http.fetch(`https://api.telegram.org/bot${telegramToken}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    return JSON.parse(response.text) as TelegramReply
+  } catch {
+    return { ok: false, description: 'Telegram could not be reached' }
+  }
+}
+
+async function telegram($: EngineInterface, chatId: string, title: string, body: string): Promise<boolean> {
+  const sent = await telegramApi($, 'sendMessage', {
+    chat_id: chatId,
+    text: `${title}\n${body}`,
+    disable_web_page_preview: true,
+  })
+  return sent.ok
+}
+
+async function refreshChannels($: EngineInterface): Promise<void> {
+  const config = await readConfig($)
+  const set = [
+    ...(config.ntfyUrl === undefined ? [] : ['ntfy']),
+    ...(config.telegramChatId === undefined || telegramToken === undefined ? [] : ['telegram']),
+  ]
+  await update($, channels, () => set)
+}
+
 async function alert($: EngineInterface, title: string, body: string): Promise<void> {
   if (!(await read($, isNotifying))) return
-  const { ntfyUrl } = await readConfig($)
-  await Promise.all([desktop($, title, body), ntfyUrl === undefined ? undefined : phone($, ntfyUrl, title, body)])
+  const { ntfyUrl, telegramChatId } = await readConfig($)
+  await Promise.all([
+    desktop($, title, body),
+    ntfyUrl === undefined ? undefined : phone($, ntfyUrl, title, body),
+    telegramChatId === undefined ? undefined : telegram($, telegramChatId, title, body),
+  ])
+}
+
+// The id `claude plugin configure` takes: the installed entry that reads this
+// folder, else any install of this name.
+async function pluginId($: EngineInterface): Promise<string> {
+  try {
+    const listed = await $.process.run(['claude', 'plugin', 'list', '--json'], { timeoutMs: 15_000 })
+    const entries = JSON.parse(listed.stdout) as Array<{ id?: string; installPath?: string; readFromFolder?: string }>
+    const own =
+      entries.find(one => one.readFromFolder === $.plugin.root || one.installPath === $.plugin.root) ??
+      entries.find(one => one.id?.startsWith(`${$.plugin.name}@`))
+    if (own?.id !== undefined) return own.id
+  } catch {
+    // No claude on PATH: name the GitHub install.
+  }
+  return `${$.plugin.name}@claude-agent-watch`
+}
+
+async function telegramSetup($: EngineInterface): Promise<string> {
+  return [
+    'To get alerts in Telegram:',
+    '1. In Telegram, open @BotFather, send /newbot, and copy the token it gives you.',
+    '2. Save the token in Claude Code secure storage. In your own terminal (not in a Claude prompt), run this and paste the token at the silent prompt:',
+    `   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure ${await pluginId($)} --values-stdin; unset T`,
+    '   Or open /plugin, then agent-watch, then Configure.',
+    '3. Run /reload-plugins, send /start to your bot in Telegram, then run /agent-watch-telegram again.',
+  ].join('\n')
 }
 
 // The windows a relay of this agent spends: an agy model draws on its group.
@@ -201,7 +280,10 @@ async function collect($: EngineInterface): Promise<void> {
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const token = options.telegramBotToken
+  telegramToken = typeof token === 'string' && token.trim() !== '' ? token.trim() : undefined
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'agent-watch',
@@ -212,8 +294,12 @@ export const register: Register = on => {
       description: 'Send alerts to your phone through ntfy: no argument sets up a topic; off, test, a topic or a URL',
       argumentHint: '[off | test | <topic> | <url>]',
     })
-    const { ntfyUrl } = await readConfig($)
-    await update($, phoneUrl, () => ntfyUrl ?? null)
+    await $.command.register({
+      name: 'agent-watch-telegram',
+      description: 'Send alerts to Telegram: no argument finds your chat; off, test, or a chat id',
+      argumentHint: '[off | test | <chat id>]',
+    })
+    await refreshChannels($)
     const stored = await $.store.get('isNotifying')
     if (typeof stored === 'boolean') await update($, isNotifying, () => stored)
     const usage = await $.session.usage()
@@ -237,7 +323,7 @@ export const register: Register = on => {
     const config = await readConfig($)
     if (arg === 'off') {
       await writeConfig($, { ...config, ntfyUrl: undefined })
-      await update($, phoneUrl, () => null)
+      await refreshChannels($)
       return { text: 'Phone alerts are off.' }
     }
     let url = config.ntfyUrl
@@ -247,7 +333,7 @@ export const register: Register = on => {
     url ??= `https://ntfy.sh/agent-watch-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
     const chosen = url
     await writeConfig($, { ...config, ntfyUrl: chosen })
-    await update($, phoneUrl, () => chosen)
+    await refreshChannels($)
     const isSent = await phone(
       $,
       chosen,
@@ -262,6 +348,54 @@ export const register: Register = on => {
         `On your phone, install the ntfy app, tap +, and subscribe to the topic ${chosen.slice(cut + 1)}${server === 'https://ntfy.sh' ? '' : ` on the server ${server}`}.`,
         'Anyone who knows the topic name can read these alerts, so keep it private.',
         'Run /agent-watch-phone off to stop them.',
+      ].join('\n'),
+    }
+  })
+
+  on('command.run', { command: 'agent-watch-telegram' }, async ($, e) => {
+    const arg = e.args.trim()
+    const config = await readConfig($)
+    if (arg === 'off') {
+      await writeConfig($, { ...config, telegramChatId: undefined })
+      await refreshChannels($)
+      return { text: 'Telegram alerts are off. The bot token stays in secure storage until you clear it in /plugin.' }
+    }
+    if (telegramToken === undefined) return { text: await telegramSetup($) }
+
+    const me = await telegramApi($, 'getMe')
+    if (!me.ok)
+      return {
+        text: `Telegram refused the bot token: ${me.description ?? 'no reason given'}.\n\n${await telegramSetup($)}`,
+      }
+    const bot = me.result?.username === undefined ? 'your bot' : `@${me.result.username}`
+
+    let chatId = arg !== '' && arg !== 'test' ? arg : config.telegramChatId
+    if (chatId !== undefined && !/^-?\d{1,20}$/.test(chatId)) return { text: `Not a Telegram chat id: ${chatId}` }
+    if (chatId === undefined) {
+      const updates = await telegramApi($, 'getUpdates', { limit: 50 })
+      const chats = (Array.isArray(updates.result) ? updates.result : []).flatMap(one =>
+        one.message?.chat === undefined ? [] : [one.message.chat],
+      )
+      const chat = chats.reverse().find(one => one.type === 'private') ?? chats[0]
+      if (chat === undefined) {
+        return {
+          text: `No message to ${bot} found yet. Send /start to ${bot} in Telegram, then run /agent-watch-telegram again.`,
+        }
+      }
+      chatId = String(chat.id)
+    }
+    await writeConfig($, { ...config, telegramChatId: chatId })
+    await refreshChannels($)
+    const isSent = await telegram(
+      $,
+      chatId,
+      'agent-watch',
+      'Telegram alerts work: questions, finished turns, relays and limits arrive here.',
+    )
+    return {
+      text: [
+        `Telegram alerts go to chat ${chatId} through ${bot}: ${isSent ? 'a test message was sent' : 'the test message failed to send'}.`,
+        'Run /agent-watch-telegram off to stop them.',
       ].join('\n'),
     }
   })
@@ -382,7 +516,7 @@ export const register: Register = on => {
     const items = await read($, plan)
     const busy = await read($, subagents)
     const notifying = await read($, isNotifying)
-    const phoneTo = await read($, phoneUrl)
+    const channelList = await read($, channels)
     const outAts = snap?.forecasts ?? {}
 
     const rows: AgentRow[] = [
@@ -517,14 +651,14 @@ export const register: Register = on => {
         <Box marginTop={1}>
           <Button
             key="notify"
-            label={notifying ? (phoneTo === null ? 'Alerts on' : 'Alerts on + phone') : 'Alerts off'}
+            label={notifying ? 'Alerts on' : 'Alerts off'}
             onPress={async () => {
               const next = !notifying
               await update($, isNotifying, () => next)
               await $.store.set('isNotifying', next)
             }}
           />
-          <Text> </Text>
+          <Text dimColor>{notifying && channelList.length > 0 ? ` + ${channelList.join(', ')} ` : ' '}</Text>
           <Button key="refresh" label="Refresh" onPress={() => collect($)} />
         </Box>
         <Text dimColor wrap="truncate-end">

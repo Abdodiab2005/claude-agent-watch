@@ -7,6 +7,7 @@ const NOW = 1_793_562_512_000
 const HOUR = 3_600_000
 const MINUTE = 60_000
 const NTFY = 'https://ntfy.sh/agent-watch-test'
+const TOKEN = '123456:TEST-token-never-shown'
 
 const PANE = {
   plugin: 'agent-watch',
@@ -58,13 +59,14 @@ const ok = (stdout = '') => ({
 // Stands for the engine and the host under the mod: the collector's output
 // comes from `outputs`, one per run; desktop alerts, phone posts and config
 // writes are recorded.
-function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string } = {}) {
+function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string; telegramChatId?: string } = {}) {
   const clock = mock.clock(on, { now: NOW })
   const alerts: string[] = []
   const phones: string[] = []
   const collects: string[] = []
   const writes: string[] = []
-  let config = options.ntfyUrl === undefined ? undefined : JSON.stringify({ ntfyUrl: options.ntfyUrl })
+  const telegrams: string[] = []
+  let config = Object.keys(options).length === 0 ? undefined : JSON.stringify(options)
   mock.store(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -79,8 +81,24 @@ function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string } = {}) {
     return { value: undefined }
   })
   on('http.fetch', (_, e) => {
-    phones.push(`${e.url} | ${e.init?.headers?.Title} | ${e.init?.body}`)
-    return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
+    const telegram = /^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)$/.exec(e.url)
+    if (telegram === null) {
+      phones.push(`${e.url} | ${e.init?.headers?.Title} | ${e.init?.body}`)
+      return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
+    }
+    expect(telegram[1]).toBe(TOKEN)
+    telegrams.push(`${telegram[2]} ${e.init?.body}`)
+    const answers: Record<string, object> = {
+      getMe: { ok: true, result: { username: 'watch_bot' } },
+      getUpdates: {
+        ok: true,
+        result: [{ update_id: 1, message: { chat: { id: 42, type: 'private', first_name: 'Me' } } }],
+      },
+      sendMessage: { ok: true, result: {} },
+    }
+    return {
+      value: { status: 200, ok: true, headers: {}, text: JSON.stringify(answers[telegram[2] ?? ''] ?? { ok: false }) },
+    }
   })
   on('session.usage', () => ({
     value: {
@@ -92,15 +110,23 @@ function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string } = {}) {
   on('process.run', (_, e) => {
     if (e.argv[0] === 'notify-send') {
       expect(e.argv).toContain('--icon=claude-desktop')
-      alerts.push(e.argv.filter(arg => !arg.startsWith('--')).slice(1).join(' | '))
+      alerts.push(
+        e.argv
+          .filter(arg => !arg.startsWith('--'))
+          .slice(1)
+          .join(' | '),
+      )
       return ok()
+    }
+    if (e.argv[0] === 'claude') {
+      return ok(JSON.stringify([{ id: 'agent-watch@test-market', readFromFolder: '/elsewhere' }]))
     }
     collects.push(e.argv[e.argv.indexOf('--claude') + 1] ?? '')
     const next = outputs.length > 1 ? outputs.shift() : outputs[0]
     return ok(JSON.stringify(next ?? snapshot()))
   })
   on('tool.call', () => ({ result: {} }))
-  return { clock, alerts, phones, collects, writes }
+  return { clock, alerts, phones, collects, writes, telegrams }
 }
 
 const SESSION = { cwd: '/', surface: 'terminal', isInteractive: true } as const
@@ -119,7 +145,15 @@ test('the pane draws limits, a forecast, a stalled relay, a finished one and the
       runs: [RELAY],
       forecasts: { 'codex|5h': NOW + 90 * MINUTE },
       finished: [
-        { agent: 'grok', repo: 'api', brief: 'brief-1.txt', status: 'completed', files: 4, startedAt: NOW - HOUR, endedAt: NOW - 5 * MINUTE },
+        {
+          agent: 'grok',
+          repo: 'api',
+          brief: 'brief-1.txt',
+          status: 'completed',
+          files: 4,
+          startedAt: NOW - HOUR,
+          endedAt: NOW - 5 * MINUTE,
+        },
       ],
     }),
   ])
@@ -152,21 +186,32 @@ test('the pane draws limits, a forecast, a stalled relay, a finished one and the
   }
 })
 
-test('each alert the collector claimed reaches the desktop and the phone once', async ($, on) => {
-  const claimed = snapshot({ alerts: [{ title: 'codex completed', body: 'shop · brief-2.txt · 4 files · 12m' }] })
-  const { clock, alerts, phones, collects } = host(on, [claimed, snapshot()], { ntfyUrl: NTFY })
+test(
+  'each alert the collector claimed reaches the desktop, ntfy and Telegram once',
+  { options: { telegramBotToken: TOKEN } },
+  async ($, on) => {
+    const claimed = snapshot({ alerts: [{ title: 'codex completed', body: 'shop · brief-2.txt · 4 files · 12m' }] })
+    const { clock, alerts, phones, collects, telegrams } = host(on, [claimed, snapshot()], {
+      ntfyUrl: NTFY,
+      telegramChatId: '42',
+    })
 
-  await $.session.start(SESSION)
-  await clock.settle()
-  expect(alerts).toEqual(['codex completed | shop · brief-2.txt · 4 files · 12m'])
-  expect(phones).toEqual([`${NTFY} | codex completed | shop · brief-2.txt · 4 files · 12m`])
-  expect(collects[0]).toContain('"label":"5h","percentUsed":42')
+    await $.session.start(SESSION)
+    await clock.settle()
+    expect(alerts).toEqual(['codex completed | shop · brief-2.txt · 4 files · 12m'])
+    expect(phones).toEqual([`${NTFY} | codex completed | shop · brief-2.txt · 4 files · 12m`])
+    expect(telegrams).toEqual([
+      'sendMessage {"chat_id":"42","text":"codex completed\\nshop · brief-2.txt · 4 files · 12m","disable_web_page_preview":true}',
+    ])
+    expect(collects[0]).toContain('"label":"5h","percentUsed":42')
 
-  await clock.advance(30_000)
-  await clock.settle()
-  expect(alerts).toHaveLength(1)
-  expect(phones).toHaveLength(1)
-})
+    await clock.advance(30_000)
+    await clock.settle()
+    expect(alerts).toHaveLength(1)
+    expect(phones).toHaveLength(1)
+    expect(telegrams).toHaveLength(1)
+  },
+)
 
 test('a dispatch to an agent past 90% is refused with the agents that have room', async ($, on) => {
   const { clock } = host(on, [snapshot()])
@@ -191,7 +236,9 @@ test('/agent-watch-phone sets up a private topic, sends a test, and turns off', 
 
   const setUp = await $.command.run(typed('agent-watch-phone', ''))
   expect(setUp.text).toContain('a test alert was sent')
-  expect(writes[0]).toMatch(/^\/home\/me\/\.config\/agent-watch\/config\.json .*https:\/\/ntfy\.sh\/agent-watch-[0-9a-f]{20}/s)
+  expect(writes[0]).toMatch(
+    /^\/home\/me\/\.config\/agent-watch\/config\.json .*https:\/\/ntfy\.sh\/agent-watch-[0-9a-f]{20}/s,
+  )
   expect(phones[0]).toMatch(/^https:\/\/ntfy\.sh\/agent-watch-[0-9a-f]{20} \| agent-watch \| Phone alerts work/)
 
   const off = await $.command.run(typed('agent-watch-phone', 'off'))
@@ -204,7 +251,7 @@ test('the alerts button turns desktop and phone alerts off', async ($, on) => {
   await $.session.start(SESSION)
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ key: 'notify' }))?.text).toContain('Alerts on + phone')
+  expect((await ui.find({ type: 'Text', text: /\+ ntfy/ }))?.text).toBe(' + ntfy ')
   await ui.press({ key: 'notify' })
 
   await $.tool.call({
@@ -226,3 +273,39 @@ test('the alerts button turns desktop and phone alerts off', async ($, on) => {
   expect(phones).toHaveLength(0)
   await ui.unmount()
 })
+
+test('/agent-watch-telegram explains the secure setup when no bot token is saved', async ($, on) => {
+  const { clock, telegrams } = host(on, [snapshot()])
+  await $.session.start(SESSION)
+  await clock.settle()
+
+  const answer = await $.command.run(typed('agent-watch-telegram', ''))
+  expect(answer.text).toContain('@BotFather')
+  expect(answer.text).toContain('claude plugin configure agent-watch@test-market --values-stdin')
+  expect(telegrams).toHaveLength(0)
+})
+
+test(
+  '/agent-watch-telegram finds the chat, sends a test, and never shows the token',
+  { options: { telegramBotToken: TOKEN } },
+  async ($, on) => {
+    const { clock, writes, telegrams } = host(on, [snapshot()])
+    await $.session.start(SESSION)
+    await clock.settle()
+
+    const answer = await $.command.run(typed('agent-watch-telegram', ''))
+    expect(answer.text).toContain('Telegram alerts go to chat 42 through @watch_bot: a test message was sent.')
+    expect(answer.text).not.toContain(TOKEN)
+    expect(writes.join('\n')).not.toContain(TOKEN)
+    expect(writes[0]).toContain('"telegramChatId": "42"')
+    expect(telegrams.map(one => one.split(' ')[0])).toEqual(['getMe', 'getUpdates', 'sendMessage'])
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.find({ type: 'Text', text: /telegram/ }))?.text).toBe(' + telegram ')
+    await ui.unmount()
+
+    const off = await $.command.run(typed('agent-watch-telegram', 'off'))
+    expect(off.text).toContain('Telegram alerts are off.')
+    expect(writes[1]).not.toContain('telegramChatId')
+  },
+)

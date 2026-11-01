@@ -15,7 +15,7 @@ the `*-delegate` skills. It keeps a pane beside the chat that shows:
 
 It also sends alerts, to the Linux desktop (`notify-send`, with the Claude
 desktop app's icon when it is installed) and optionally to your phone through
-[ntfy](https://ntfy.sh), when:
+[ntfy](https://ntfy.sh), a Telegram bot, or both, when:
 
 - Claude asks you a question or needs a permission;
 - Claude finishes a turn that took 15 seconds or more;
@@ -82,6 +82,10 @@ finished relay's status and touched files come from the `result.json` in its
 
 ## Phone alerts
 
+ntfy and Telegram can be used one at a time or together.
+
+### ntfy
+
 ```
 /agent-watch-phone            set up a new random topic and send a test alert
 /agent-watch-phone test       send a test alert
@@ -95,8 +99,44 @@ knows the topic name can read the alerts, so keep it private. Alerts carry
 repository and brief file names and limit figures, never code or tokens. The
 setting is kept in `~/.config/agent-watch/config.json`.
 
-The **Alerts on** button at the bottom of the pane turns desktop and phone
-alerts off and on.
+### Telegram
+
+1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and
+   copy the token it gives you.
+2. Save the token in Claude Code's secure storage. In your own terminal (not in
+   a Claude prompt), run this and paste the token at the silent prompt:
+
+   ```
+   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure agent-watch@claude-agent-watch --values-stdin; unset T
+   ```
+
+   `agent-watch@claude-agent-watch` is the id of an install from GitHub;
+   `claude plugin list` shows yours, and `/agent-watch-telegram` prints this
+   line with it filled in.
+
+   Or open `/plugin`, then agent-watch, then Configure.
+3. Run `/reload-plugins`, send `/start` to your bot, then run
+   `/agent-watch-telegram`. It finds your chat, saves its id, and sends a test
+   message.
+
+```
+/agent-watch-telegram             find your chat and send a test message
+/agent-watch-telegram test        send a test message
+/agent-watch-telegram <chat id>   send to this chat (a group's id starts with -)
+/agent-watch-telegram off         stop Telegram alerts
+```
+
+The token is the manifest's `sensitive` option `telegramBotToken`: Claude Code
+keeps it in its secure storage, not in `settings.json`, and hands it only to the
+mod when it loads. The mod keeps it in memory, sends it only to
+`api.telegram.org` (the Bot API puts it in the request URL), and never stores,
+draws or prints it. The read above keeps it out of your shell history and off
+the screen. The chat id is kept in `~/.config/agent-watch/config.json`.
+
+### Turning alerts off
+
+The **Alerts on** button at the bottom of the pane turns desktop, ntfy and
+Telegram alerts off and on. The channels set up are listed beside it.
 
 ## Files it writes
 

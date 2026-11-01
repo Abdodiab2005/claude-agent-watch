@@ -1,11 +1,31 @@
 {
   "name": "agent-watch",
-  "version": "0.2.0",
-  "description": "Side pane with the 5-hour and weekly limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop and phone alerts",
-  "author": { "name": "Abdodiab2005" },
+  "version": "0.3.0",
+  "description": "Side pane with the 5-hour and weekly limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop, ntfy and Telegram alerts",
+  "author": {
+    "name": "Abdodiab2005"
+  },
   "homepage": "https://github.com/Abdodiab2005/claude-agent-watch",
   "repository": "https://github.com/Abdodiab2005/claude-agent-watch",
   "license": "MIT",
-  "keywords": ["usage", "rate-limits", "codex", "antigravity", "grok", "notifications", "ntfy"],
+  "keywords": [
+    "usage",
+    "rate-limits",
+    "codex",
+    "antigravity",
+    "grok",
+    "notifications",
+    "ntfy",
+    "telegram"
+  ],
+  "userConfig": {
+    "telegramBotToken": {
+      "type": "string",
+      "title": "Telegram bot token",
+      "description": "The token @BotFather gave your bot, for alerts in Telegram. Kept in Claude Code secure storage. Leave empty for no Telegram alerts.",
+      "sensitive": true,
+      "required": false
+    }
+  },
   "types": "./types/index.d.ts"
 }

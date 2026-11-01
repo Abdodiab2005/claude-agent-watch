@@ -72,7 +72,8 @@ declare module 'claude-code' {
       plan: Shaped<PlanItem[]>
       subagents: Shaped<SubagentRun[]>
       isNotifying: boolean
-      phoneUrl: string | null
+      /** The alert channels set up besides the desktop: `ntfy`, `telegram`. */
+      channels: Shaped<string[]>
     }
   }
 }
