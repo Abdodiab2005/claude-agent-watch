@@ -1,0 +1,11 @@
+{
+  "name": "agent-watch",
+  "version": "0.2.0",
+  "description": "Side pane with the 5-hour and weekly limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop and phone alerts",
+  "author": { "name": "Abdodiab2005" },
+  "homepage": "https://github.com/Abdodiab2005/claude-agent-watch",
+  "repository": "https://github.com/Abdodiab2005/claude-agent-watch",
+  "license": "MIT",
+  "keywords": ["usage", "rate-limits", "codex", "antigravity", "grok", "notifications", "ntfy"],
+  "types": "./types/index.d.ts"
+}

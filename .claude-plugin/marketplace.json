@@ -1,0 +1,16 @@
+{
+  "name": "claude-agent-watch",
+  "owner": {
+    "name": "Abdodiab2005"
+  },
+  "metadata": {
+    "description": "agent-watch: usage limits, running relays, the plan and alerts for Claude Code orchestrators"
+  },
+  "plugins": [
+    {
+      "name": "agent-watch",
+      "source": "./",
+      "description": "Side pane with usage limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop and phone alerts"
+    }
+  ]
+}
