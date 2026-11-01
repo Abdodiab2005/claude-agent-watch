@@ -19,12 +19,16 @@ It also sends alerts, to the desktop and optionally to your phone through
 [ntfy](https://ntfy.sh), a Telegram bot, or both, when:
 
 - Claude asks you a question or needs a permission;
-- Claude finishes a turn that took 15 seconds or more;
+- Claude finishes a turn that took 15 seconds or more (the notification does not include Claude's answer);
 - a relay finishes, or seems stuck (no file change for 20 minutes);
 - any limit passes 90%, or is forecast to run out before it resets.
 
-With several Claude sessions open, each machine-wide alert (a relay, a limit)
-is sent once, not once per session.
+With several Claude sessions open, machine-wide alerts (relays and limits)
+are delivered once **per enabled channel**. If a channel is disabled or a
+delivery fails, that channel can retry on a later poll without resending to
+channels that succeeded. Delivery receipts and short-lived leases live in
+`~/.cache/agent-watch/deliveries/`. A crash between a successful network
+send and writing its receipt can rarely produce a duplicate.
 
 Finally, it routes delegated work by limits: when Claude starts a relay for an
 agent whose limit is past 90%, the call is refused with a message naming the

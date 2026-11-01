@@ -37,8 +37,8 @@ export type FinishedRun = {
   endedAt: number
 }
 
-/** A desktop alert the collector claimed for this session to send. */
-export type Alert = { title: string; body: string; kind?: AlertKind }
+/** A candidate alert, repeated while eligible; id is a stable per-event receipt key. */
+export type Alert = { id?: string; title: string; body: string; kind?: AlertKind }
 
 /** What an alert is about; each kind can be switched off on its own. */
 export type AlertKind = 'ask' | 'done' | 'relay' | 'limit'
@@ -46,7 +46,7 @@ export type AlertKind = 'ask' | 'done' | 'relay' | 'limit'
 /** The alert channels set up besides the desktop, and the switches turned off. */
 export type AlertPrefs = { channels: string[]; off: string[] }
 
-/** What scripts/collect.mjs prints; `alerts` is sent, never stored. */
+/** What scripts/collect.mjs prints; alerts are delivered per channel with receipts. */
 export type Snapshot = {
   at: number
   agents: AgentRow[]
