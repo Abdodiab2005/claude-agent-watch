@@ -5,16 +5,17 @@ implementation work to other coding agents (Codex, Antigravity, Grok) through
 the `*-delegate` skills. It keeps a pane beside the chat that shows:
 
 - **Limits**: the 5-hour and weekly usage of each agent, with a bar, the time
-  until the window resets, and a forecast (`⚠ 1h30m`) when the recent pace
-  would use the window up before it resets.
+  until the window resets, and a forecast (`⚠ out 2d7h`) when the average
+  pace since the window opened, idle hours included, would use it up before it
+  resets. A window less than a fifth gone gets no forecast yet, and
+  Antigravity's buckets, which refill as they go, get none.
 - **Running**: every delegate relay running on the machine (from any Claude
   session), how long it has run, and `idle 25m` when it has changed no file for
   a while; the session's own subagents; relays that finished in the last hour,
   with their status and the number of files they touched.
 - **Plan**: the session's todo or task list, with the current step in bold.
 
-It also sends alerts, to the Linux desktop (`notify-send`, with the Claude
-desktop app's icon when it is installed) and optionally to your phone through
+It also sends alerts, to the desktop and optionally to your phone through
 [ntfy](https://ntfy.sh), a Telegram bot, or both, when:
 
 - Claude asks you a question or needs a permission;
@@ -57,8 +58,16 @@ Anywhere else, run `/agent-watch`.
 ## Requirements
 
 - Node.js 22.5 or newer on `PATH` (the collector script runs with it).
-- Linux for desktop alerts through `notify-send`; elsewhere alerts go through
-  Claude Code's own notification channel.
+- Linux, macOS or Windows:
+
+  | | Desktop alerts | Relay detection |
+  | --- | --- | --- |
+  | Linux | `notify-send`, with the Claude desktop app's icon when it is installed | `ps` |
+  | macOS | `osascript` (macOS may ask once to allow Script Editor's notifications) | `ps` |
+  | Windows | a toast from Windows PowerShell | `Get-CimInstance Win32_Process` |
+
+  Where the desktop tool fails, alerts go through Claude Code's own
+  notification channel.
 - Whichever agent CLIs you use: `codex`, `agy`, `grok`. An agent that is not
   installed shows a short note instead of limits.
 
@@ -110,6 +119,12 @@ setting is kept in `~/.config/agent-watch/config.json`.
    read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure agent-watch@claude-agent-watch --values-stdin; unset T
    ```
 
+   In Windows PowerShell:
+
+   ```
+   $s = Read-Host -AsSecureString 'Token'; $t = [Net.NetworkCredential]::new('', $s).Password; '{"telegramBotToken":"' + $t + '"}' | claude plugin configure agent-watch@claude-agent-watch --values-stdin; Remove-Variable s, t
+   ```
+
    `agent-watch@claude-agent-watch` is the id of an install from GitHub;
    `claude plugin list` shows yours, and `/agent-watch-telegram` prints this
    line with it filled in.
@@ -133,24 +148,38 @@ mod when it loads. The mod keeps it in memory, sends it only to
 draws or prints it. The read above keeps it out of your shell history and off
 the screen. The chat id is kept in `~/.config/agent-watch/config.json`.
 
-### Turning alerts off
+### Switching alerts on and off
 
-The **Alerts on** button at the bottom of the pane turns desktop, ntfy and
-Telegram alerts off and on. The channels set up are listed beside it.
+The **Alerts** row at the bottom of the pane has an `on`/`off` button for all
+alerts, then a switch for each channel and each kind of alert:
+
+```
+Alerts [ on ] [ Refresh ]
+[ ✓ desktop ] [ ✓ ntfy ] [ ✓ telegram ]
+[ ✓ asks ] [ ✗ done ] [ ✓ relays ] [ ✓ limits ]
+```
+
+`asks` covers questions and permission prompts, `done` finished turns,
+`relays` finished and stuck relays, `limits` the 90% and forecast alerts. The
+switches are kept in `~/.config/agent-watch/config.json`, so every open
+session follows a change at once.
 
 ## Files it writes
 
 Everything goes under `~/.cache/agent-watch/`: the cached Antigravity and Grok
-readings, the relays seen last, the relays that finished, 3 hours of limit
-samples for the forecast, and the claim files that keep an alert from being
-sent twice. Claim files older than 8 days are deleted.
+readings, the relays seen last, the relays that finished, and the claim
+files that keep an alert from being sent twice. Claim files older than 8 days are deleted.
 
 ## Development
 
 ```
 claude plugin validate .
 claude plugin test .
+node scripts/platform.check.mjs
 ```
+
+The last one checks the process parsers against Linux, macOS and Windows
+output.
 
 `claude --plugin-dir <this folder>` loads the mod for one session.
 

@@ -1,7 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
-import type { AgentRow, FinishedRun, LimitWindow, PlanItem, RelayRun, Snapshot, SubagentRun } from '../types'
+import type {
+  AgentRow,
+  AlertKind,
+  AlertPrefs,
+  FinishedRun,
+  LimitWindow,
+  PlanItem,
+  RelayRun,
+  Snapshot,
+  SubagentRun,
+} from '../types'
 
 const PANE = 'agent-watch'
 const TITLE = 'Agents'
@@ -12,7 +22,7 @@ const WARN_PERCENT = 90
 // The Claude desktop app's icon, found by name in the icon theme where it is installed.
 const ICON = 'claude-desktop'
 const BUSY: readonly string[] = ['pending', 'running', 'waiting']
-const RELAY = /\b([a-z]+)-delegate\/scripts\/relay\.mjs\b/
+const RELAY = /\b([a-z]+)-delegate[\\/]scripts[\\/]relay\.mjs\b/
 const STALL_MS = 20 * 60_000
 
 // Each shape tag declines what an earlier version of the mod stored.
@@ -21,15 +31,28 @@ const claude = atom({ plugin: 'agent-watch', key: 'claude' } as const, [], { sha
 const plan = atom({ plugin: 'agent-watch', key: 'plan' } as const, [], { shape: 'plan-1' })
 const subagents = atom({ plugin: 'agent-watch', key: 'subagents' } as const, [], { shape: 'subagents-1' })
 const isNotifying = atom({ plugin: 'agent-watch', key: 'isNotifying' } as const, true)
-const channels = atom({ plugin: 'agent-watch', key: 'channels' } as const, [], { shape: 'channels-1' })
+const alertPrefs = atom({ plugin: 'agent-watch', key: 'alerts' } as const, { channels: [], off: [] } as AlertPrefs, {
+  shape: 'alerts-1',
+})
+
+// The pane's alert switches: each channel, and each kind of alert.
+const CHANNEL_LABELS: Record<string, string> = { desktop: 'desktop', ntfy: 'ntfy', telegram: 'telegram' }
+const KIND_LABELS: ReadonlyArray<readonly [AlertKind, string]> = [
+  ['ask', 'asks'],
+  ['done', 'done'],
+  ['relay', 'relays'],
+  ['limit', 'limits'],
+]
 
 const CLAUDE_LABELS: Record<string, string> = { five_hour: '5h', seven_day: 'week' }
+const CLAUDE_WINDOWS: Record<string, number> = { five_hour: 5 * 3_600_000, seven_day: 7 * 24 * 3_600_000 }
 
 function toWindows(limits: readonly SessionRateLimit[]): LimitWindow[] {
   return limits.map(limit => ({
     label: CLAUDE_LABELS[limit.kind] ?? limit.kind.replace(/_/g, ' '),
     percentUsed: limit.percentUsed,
     resetsAt: limit.resetsAt === undefined ? undefined : Date.parse(limit.resetsAt),
+    windowMs: CLAUDE_WINDOWS[limit.kind],
   }))
 }
 
@@ -56,16 +79,64 @@ function firstLine(text: string): string {
 let isCollecting = false
 let lastQuestionAt = 0
 
-// notify-send reaches the Linux desktop whatever the terminal; elsewhere
-// the person's own Claude Code notification channel takes it.
+type Platform = 'linux' | 'darwin' | 'win32'
+let platform: Platform | undefined
+
+// Windows sets OS=Windows_NT; elsewhere uname names the kernel.
+async function hostPlatform($: EngineInterface): Promise<Platform> {
+  if (platform !== undefined) return platform
+  if ((await $.env.get('OS').catch(() => undefined)) === 'Windows_NT') return (platform = 'win32')
+  const uname = await $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).catch(() => undefined)
+  return (platform = uname?.stdout.trim() === 'Darwin' ? 'darwin' : 'linux')
+}
+
+// A PowerShell string literal: single quotes, and the curly ones PowerShell
+// also reads as quotes, doubled.
+function psQuote(text: string): string {
+  return `'${text.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
+}
+
+// A Windows toast through the WinRT API Windows PowerShell 5.1 ships with,
+// shown under PowerShell's own app id; the texts are XML-escaped.
+function windowsToast(title: string, body: string): string {
+  return [
+    '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null',
+    '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null',
+    `$t = [Security.SecurityElement]::Escape(${psQuote(title)})`,
+    `$b = [Security.SecurityElement]::Escape(${psQuote(body)})`,
+    '$x = New-Object Windows.Data.Xml.Dom.XmlDocument',
+    `$x.LoadXml("<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>")`,
+    "$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($x))',
+  ].join('; ')
+}
+
+// The desktop's own notifications: notify-send on Linux (with the Claude
+// desktop app's icon where installed), osascript on macOS, a toast on
+// Windows. Where that fails, the person's Claude Code channel takes it.
 async function desktop($: EngineInterface, title: string, body: string): Promise<void> {
+  const os = await hostPlatform($)
+  const argv =
+    os === 'darwin'
+      ? [
+          'osascript',
+          '-e',
+          'on run argv',
+          '-e',
+          'display notification (item 2 of argv) with title (item 1 of argv)',
+          '-e',
+          'end run',
+          title,
+          body,
+        ]
+      : os === 'win32'
+        ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', windowsToast(title, body)]
+        : ['notify-send', '--app-name=Claude Code', `--icon=${ICON}`, title, body]
   try {
-    const sent = await $.process.run(['notify-send', '--app-name=Claude Code', `--icon=${ICON}`, title, body], {
-      timeoutMs: 5_000,
-    })
+    const sent = await $.process.run(argv, { timeoutMs: 10_000 })
     if (sent.exitCode === 0) return
   } catch {
-    // No notify-send on this host: fall through to the engine's channel.
+    // The tool is missing on this host: fall through to the engine's channel.
   }
   await $.ui.notify(body, { title }).catch(() => undefined)
 }
@@ -77,12 +148,13 @@ async function desktop($: EngineInterface, title: string, body: string): Promise
 // option, which Claude Code keeps in its secure storage and hands to
 // `register` alone. It lives in this module's memory, goes only into
 // api.telegram.org request URLs, and is never stored, drawn or returned.
-type Config = { ntfyUrl?: string; telegramChatId?: string }
+type Config = { ntfyUrl?: string; telegramChatId?: string; off?: string[] }
 
 let telegramToken: string | undefined
 
 async function configPath($: EngineInterface): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
+  const home =
+    (await $.env.get('HOME').catch(() => undefined)) ?? (await $.env.get('USERPROFILE').catch(() => undefined))
   return home ? `${home}/.config/agent-watch/config.json` : undefined
 }
 
@@ -142,22 +214,35 @@ async function telegram($: EngineInterface, chatId: string, title: string, body:
   return sent.ok
 }
 
-async function refreshChannels($: EngineInterface): Promise<void> {
+// The switches live in config.json beside the channels, so every session
+// obeys a change at once; each collect redraws them from there.
+async function refreshAlerts($: EngineInterface): Promise<void> {
   const config = await readConfig($)
-  const set = [
-    ...(config.ntfyUrl === undefined ? [] : ['ntfy']),
-    ...(config.telegramChatId === undefined || telegramToken === undefined ? [] : ['telegram']),
-  ]
-  await update($, channels, () => set)
+  const prefs: AlertPrefs = {
+    channels: [
+      ...(config.ntfyUrl === undefined ? [] : ['ntfy']),
+      ...(config.telegramChatId === undefined || telegramToken === undefined ? [] : ['telegram']),
+    ],
+    off: config.off ?? [],
+  }
+  await update($, alertPrefs, () => prefs)
 }
 
-async function alert($: EngineInterface, title: string, body: string): Promise<void> {
+async function toggleAlert($: EngineInterface, id: string): Promise<void> {
+  const config = await readConfig($)
+  const off = config.off ?? []
+  await writeConfig($, { ...config, off: off.includes(id) ? off.filter(one => one !== id) : [...off, id] })
+  await refreshAlerts($)
+}
+
+async function alert($: EngineInterface, kind: AlertKind, title: string, body: string): Promise<void> {
   if (!(await read($, isNotifying))) return
-  const { ntfyUrl, telegramChatId } = await readConfig($)
+  const { ntfyUrl, telegramChatId, off = [] } = await readConfig($)
+  if (off.includes(kind)) return
   await Promise.all([
-    desktop($, title, body),
-    ntfyUrl === undefined ? undefined : phone($, ntfyUrl, title, body),
-    telegramChatId === undefined ? undefined : telegram($, telegramChatId, title, body),
+    off.includes('desktop') ? undefined : desktop($, title, body),
+    ntfyUrl === undefined || off.includes('ntfy') ? undefined : phone($, ntfyUrl, title, body),
+    telegramChatId === undefined || off.includes('telegram') ? undefined : telegram($, telegramChatId, title, body),
   ])
 }
 
@@ -178,11 +263,16 @@ async function pluginId($: EngineInterface): Promise<string> {
 }
 
 async function telegramSetup($: EngineInterface): Promise<string> {
+  const id = await pluginId($)
+  const save =
+    (await hostPlatform($)) === 'win32'
+      ? `   $s = Read-Host -AsSecureString 'Token'; $t = [Net.NetworkCredential]::new('', $s).Password; '{"telegramBotToken":"' + $t + '"}' | claude plugin configure ${id} --values-stdin; Remove-Variable s, t`
+      : `   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure ${id} --values-stdin; unset T`
   return [
     'To get alerts in Telegram:',
     '1. In Telegram, open @BotFather, send /newbot, and copy the token it gives you.',
-    '2. Save the token in Claude Code secure storage. In your own terminal (not in a Claude prompt), run this and paste the token at the silent prompt:',
-    `   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure ${await pluginId($)} --values-stdin; unset T`,
+    '2. Save the token in Claude Code secure storage. In your own terminal (not in a Claude prompt), run this and paste the token at the hidden prompt:',
+    save,
     '   Or open /plugin, then agent-watch, then Configure.',
     '3. Run /reload-plugins, send /start to your bot in Telegram, then run /agent-watch-telegram again.',
   ].join('\n')
@@ -267,9 +357,10 @@ async function collect($: EngineInterface): Promise<void> {
     // The collector claimed these for this session alone: send each once.
     for (const one of alerts) {
       $.ui.toast(one.body)
-      await alert($, one.title, one.body)
+      await alert($, one.kind ?? 'relay', one.title, one.body)
     }
 
+    await refreshAlerts($)
     const agents = await $.agent.list()
     const busy: SubagentRun[] = agents
       .filter(agent => BUSY.includes(agent.status))
@@ -299,7 +390,7 @@ export const register: Register = (on, options) => {
       description: 'Send alerts to Telegram: no argument finds your chat; off, test, or a chat id',
       argumentHint: '[off | test | <chat id>]',
     })
-    await refreshChannels($)
+    await refreshAlerts($)
     const stored = await $.store.get('isNotifying')
     if (typeof stored === 'boolean') await update($, isNotifying, () => stored)
     const usage = await $.session.usage()
@@ -323,7 +414,7 @@ export const register: Register = (on, options) => {
     const config = await readConfig($)
     if (arg === 'off') {
       await writeConfig($, { ...config, ntfyUrl: undefined })
-      await refreshChannels($)
+      await refreshAlerts($)
       return { text: 'Phone alerts are off.' }
     }
     let url = config.ntfyUrl
@@ -333,7 +424,7 @@ export const register: Register = (on, options) => {
     url ??= `https://ntfy.sh/agent-watch-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
     const chosen = url
     await writeConfig($, { ...config, ntfyUrl: chosen })
-    await refreshChannels($)
+    await refreshAlerts($)
     const isSent = await phone(
       $,
       chosen,
@@ -357,7 +448,7 @@ export const register: Register = (on, options) => {
     const config = await readConfig($)
     if (arg === 'off') {
       await writeConfig($, { ...config, telegramChatId: undefined })
-      await refreshChannels($)
+      await refreshAlerts($)
       return { text: 'Telegram alerts are off. The bot token stays in secure storage until you clear it in /plugin.' }
     }
     if (telegramToken === undefined) return { text: await telegramSetup($) }
@@ -385,7 +476,7 @@ export const register: Register = (on, options) => {
       chatId = String(chat.id)
     }
     await writeConfig($, { ...config, telegramChatId: chatId })
-    await refreshChannels($)
+    await refreshAlerts($)
     const isSent = await telegram(
       $,
       chatId,
@@ -486,7 +577,7 @@ export const register: Register = (on, options) => {
   // Attention: a question, a permission prompt, a finished turn.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     lastQuestionAt = await $.clock.now()
-    void alert($, 'Claude asks', e.questions[0]?.question ?? 'A question waits for you.')
+    void alert($, 'ask', 'Claude asks', e.questions[0]?.question ?? 'A question waits for you.')
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -494,7 +585,7 @@ export const register: Register = (on, options) => {
   on('classic.Notification', async ($, e, next) => {
     const isAsk = /permission|elicitation/.test(e.notification_type)
     const isFresh = (await $.clock.now()) - lastQuestionAt > 5_000
-    if (isAsk && isFresh) void alert($, e.title ?? 'Claude needs you', e.message)
+    if (isAsk && isFresh) void alert($, 'ask', e.title ?? 'Claude needs you', e.message)
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -502,7 +593,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId === undefined && !e.isAborted && e.durationMs >= FINISH_ALERT_MS) {
-      void alert($, `Claude finished (${span(e.durationMs)})`, firstLine(e.answer) || 'The turn ended.')
+      void alert($, 'done', `Claude finished (${span(e.durationMs)})`, firstLine(e.answer) || 'The turn ended.')
     }
 
     return done
@@ -516,7 +607,7 @@ export const register: Register = (on, options) => {
     const items = await read($, plan)
     const busy = await read($, subagents)
     const notifying = await read($, isNotifying)
-    const channelList = await read($, channels)
+    const prefs = await read($, alertPrefs)
     const outAts = snap?.forecasts ?? {}
 
     const rows: AgentRow[] = [
@@ -530,7 +621,7 @@ export const register: Register = (on, options) => {
     ]
 
     const windowLine = (agent: AgentRow, window: LimitWindow, labelWidth: number, hasForecast: boolean) => {
-      const barWidth = Math.max(4, Math.min(14, e.props.bodyColumns - labelWidth - 17 - (hasForecast ? 8 : 0)))
+      const barWidth = Math.max(4, Math.min(14, e.props.bodyColumns - labelWidth - 17 - (hasForecast ? 12 : 0)))
       const filled = Math.round((Math.min(100, window.percentUsed) / 100) * barWidth)
       const color = tone(window.percentUsed)
       const outAt = outAts[`${agent.id}|${window.label}`]
@@ -543,7 +634,7 @@ export const register: Register = (on, options) => {
             {`${Math.round(window.percentUsed)}%`.padStart(5)}
           </Text>
           <Text dimColor>{window.resetsAt === undefined ? '' : `  ↻ ${span(window.resetsAt - now)}`}</Text>
-          <Text color="warning">{outAt === undefined ? '' : `  ⚠ ${span(outAt - now)}`}</Text>
+          <Text color="warning">{outAt === undefined ? '' : `  ⚠ out ${span(outAt - now)}`}</Text>
         </Box>
       )
     }
@@ -626,6 +717,17 @@ export const register: Register = (on, options) => {
       return <Text wrap="truncate-end">{`  ○ ${item.text}`}</Text>
     }
 
+    // One switch per channel or kind: a press flips it in config.json.
+    const alertSwitch = (id: string, label: string) => {
+      const isOn = !prefs.off.includes(id)
+      return (
+        <Button key={`alert-${id}`} onPress={() => toggleAlert($, id)}>
+          <Text color={!notifying ? 'inactive' : isOn ? 'success' : 'error'}>{isOn ? '✓' : '✗'}</Text>
+          <Text dimColor={!notifying || !isOn}>{` ${label}`}</Text>
+        </Button>
+      )
+    }
+
     const runCount = (snap?.runs.length ?? 0) + busy.length
     const doneCount = items.filter(item => item.status === 'completed').length
 
@@ -649,17 +751,25 @@ export const register: Register = (on, options) => {
         {items.map(planLine)}
 
         <Box marginTop={1}>
+          <Text bold>Alerts </Text>
           <Button
             key="notify"
-            label={notifying ? 'Alerts on' : 'Alerts off'}
+            label={notifying ? 'on' : 'off'}
+            variant={notifying ? 'primary' : undefined}
             onPress={async () => {
               const next = !notifying
               await update($, isNotifying, () => next)
               await $.store.set('isNotifying', next)
             }}
           />
-          <Text dimColor>{notifying && channelList.length > 0 ? ` + ${channelList.join(', ')} ` : ' '}</Text>
+          <Text> </Text>
           <Button key="refresh" label="Refresh" onPress={() => collect($)} />
+        </Box>
+        <Box flexWrap="wrap" columnGap={1}>
+          {['desktop', ...prefs.channels].map(id => alertSwitch(id, CHANNEL_LABELS[id] ?? id))}
+        </Box>
+        <Box flexWrap="wrap" columnGap={1}>
+          {KIND_LABELS.map(([id, label]) => alertSwitch(id, label))}
         </Box>
         <Text dimColor wrap="truncate-end">
           {snap === null ? 'reading…' : (snap.error ?? `updated ${span(now - snap.at)} ago`)}

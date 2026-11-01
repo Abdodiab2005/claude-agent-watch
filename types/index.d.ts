@@ -1,5 +1,5 @@
 /** One usage window: `5h`, `week`, or `quota` for a spent Antigravity quota. */
-export type LimitWindow = { label: string; percentUsed: number; resetsAt?: number }
+export type LimitWindow = { label: string; percentUsed: number; resetsAt?: number; windowMs?: number }
 
 /** One agent's row: its windows, or a note where the CLI keeps none. */
 export type AgentRow = {
@@ -38,7 +38,13 @@ export type FinishedRun = {
 }
 
 /** A desktop alert the collector claimed for this session to send. */
-export type Alert = { title: string; body: string }
+export type Alert = { title: string; body: string; kind?: AlertKind }
+
+/** What an alert is about; each kind can be switched off on its own. */
+export type AlertKind = 'ask' | 'done' | 'relay' | 'limit'
+
+/** The alert channels set up besides the desktop, and the switches turned off. */
+export type AlertPrefs = { channels: string[]; off: string[] }
 
 /** What scripts/collect.mjs prints; `alerts` is sent, never stored. */
 export type Snapshot = {
@@ -47,7 +53,7 @@ export type Snapshot = {
   runs: RelayRun[]
   /** Relays that ended in the last hour, newest first, 3 at most. */
   finished?: FinishedRun[]
-  /** When a window reaches 100% at its recent pace, by `<agent id>|<label>`; only where that is before it resets. */
+  /** When a window reaches 100% at its average pace since it opened, by `<agent id>|<label>`; only where that is before it resets. */
   forecasts?: Record<string, number>
   alerts?: Alert[]
   error?: string
@@ -72,8 +78,8 @@ declare module 'claude-code' {
       plan: Shaped<PlanItem[]>
       subagents: Shaped<SubagentRun[]>
       isNotifying: boolean
-      /** The alert channels set up besides the desktop: `ntfy`, `telegram`. */
-      channels: Shaped<string[]>
+      /** The alert channels set up besides the desktop (`ntfy`, `telegram`) and the switches turned off. */
+      alerts: Shaped<AlertPrefs>
     }
   }
 }

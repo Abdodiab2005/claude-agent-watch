@@ -59,21 +59,26 @@ const ok = (stdout = '') => ({
 // Stands for the engine and the host under the mod: the collector's output
 // comes from `outputs`, one per run; desktop alerts, phone posts and config
 // writes are recorded.
-function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string; telegramChatId?: string } = {}) {
+type HostOptions = { ntfyUrl?: string; telegramChatId?: string; os?: 'linux' | 'darwin' | 'win32' }
+
+function host(on: On, outputs: Snapshot[], { os = 'linux', ...stored }: HostOptions = {}) {
   const clock = mock.clock(on, { now: NOW })
   const alerts: string[] = []
   const phones: string[] = []
   const collects: string[] = []
   const writes: string[] = []
   const telegrams: string[] = []
-  let config = Object.keys(options).length === 0 ? undefined : JSON.stringify(options)
+  const natives: (readonly string[])[] = []
+  let config = Object.keys(stored).length === 0 ? undefined : JSON.stringify(stored)
   mock.store(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
   on('agent.list', () => ({ value: [] }))
-  on('env.get', () => ({ value: '/home/me' }))
+  const env: Record<string, string> =
+    os === 'win32' ? { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\me' } : { HOME: '/home/me' }
+  on('env.get', (_, e) => ({ value: env[e.name] }))
   on('fs.read', () => (config === undefined ? { deny: 'no such file' } : { value: config }))
   on('fs.write', (_, e) => {
     writes.push(`${e.path} ${e.text}`)
@@ -118,6 +123,11 @@ function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string; telegram
       )
       return ok()
     }
+    if (e.argv[0] === 'uname') return ok(os === 'darwin' ? 'Darwin\n' : 'Linux\n')
+    if (e.argv[0] === 'osascript' || e.argv[0] === 'powershell.exe') {
+      natives.push(e.argv)
+      return ok()
+    }
     if (e.argv[0] === 'claude') {
       return ok(JSON.stringify([{ id: 'agent-watch@test-market', readFromFolder: '/elsewhere' }]))
     }
@@ -126,7 +136,7 @@ function host(on: On, outputs: Snapshot[], options: { ntfyUrl?: string; telegram
     return ok(JSON.stringify(next ?? snapshot()))
   })
   on('tool.call', () => ({ result: {} }))
-  return { clock, alerts, phones, collects, writes, telegrams }
+  return { clock, alerts, phones, collects, writes, telegrams, natives }
 }
 
 const SESSION = { cwd: '/', surface: 'terminal', isInteractive: true } as const
@@ -175,7 +185,7 @@ test('the pane draws limits, a forecast, a stalled relay, a finished one and the
     expect(await text(/42%/)).toContain('42%')
     expect(await text(/93%/)).toContain('93%')
     expect(await text(/36%/)).toContain('36%')
-    expect(await text(/⚠/)).toBe('  ⚠ 1h30m')
+    expect(await text(/⚠/)).toBe('  ⚠ out 1h30m')
     expect(await text(/shop · brief-2\.txt/)).toBe('shop · brief-2.txt')
     expect(await text(/idle/)).toBe('  idle 25m')
     expect(await text(/✓ grok/)).toContain('✓ grok')
@@ -251,7 +261,7 @@ test('the alerts button turns desktop and phone alerts off', async ($, on) => {
   await $.session.start(SESSION)
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /\+ ntfy/ }))?.text).toBe(' + ntfy ')
+  expect((await ui.find({ key: 'alert-ntfy' }))?.text).toContain('ntfy')
   await ui.press({ key: 'notify' })
 
   await $.tool.call({
@@ -301,7 +311,7 @@ test(
     expect(telegrams.map(one => one.split(' ')[0])).toEqual(['getMe', 'getUpdates', 'sendMessage'])
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.find({ type: 'Text', text: /telegram/ }))?.text).toBe(' + telegram ')
+    expect((await ui.find({ key: 'alert-telegram' }))?.text).toContain('telegram')
     await ui.unmount()
 
     const off = await $.command.run(typed('agent-watch-telegram', 'off'))
@@ -309,3 +319,76 @@ test(
     expect(writes[1]).not.toContain('telegramChatId')
   },
 )
+
+const ask = (question: string) => ({
+  tool: 'AskUserQuestion' as const,
+  questions: [
+    {
+      question,
+      header: 'Repo',
+      options: [
+        { label: 'a', description: 'a' },
+        { label: 'b', description: 'b' },
+      ],
+      multiSelect: false,
+    },
+  ],
+})
+const ASK = ask('Which repo?')
+
+test('a channel switch and a kind switch each turn their alerts off, for every session', async ($, on) => {
+  const { clock, alerts, phones, writes } = host(on, [snapshot()], { ntfyUrl: NTFY })
+  await $.session.start(SESSION)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (const key of ['alert-desktop', 'alert-ntfy', 'alert-ask', 'alert-done', 'alert-relay', 'alert-limit']) {
+    expect((await ui.find({ key }))?.text).toContain('✓')
+  }
+
+  await ui.press({ key: 'alert-ntfy' })
+  expect(writes.at(-1)).toContain('"off": [\n    "ntfy"\n  ]')
+  expect((await ui.find({ key: 'alert-ntfy' }))?.text).toContain('✗')
+  await $.tool.call(ASK)
+  await clock.settle()
+  expect(alerts).toEqual(['Claude asks | Which repo?'])
+  expect(phones).toHaveLength(0)
+
+  await ui.press({ key: 'alert-ask' })
+  await $.tool.call(ASK)
+  await clock.settle()
+  expect(alerts).toHaveLength(1)
+
+  await ui.press({ key: 'alert-ask' })
+  expect((await ui.find({ key: 'alert-ask' }))?.text).toContain('✓')
+  await ui.unmount()
+})
+
+test('macOS alerts go through osascript, with the texts as arguments', async ($, on) => {
+  const { clock, alerts, natives } = host(on, [snapshot()], { os: 'darwin' })
+  await $.session.start(SESSION)
+  await clock.settle()
+  await $.tool.call(ASK)
+  await clock.settle()
+
+  expect(alerts).toHaveLength(0)
+  expect(natives[0]?.[0]).toBe('osascript')
+  expect(natives[0]?.slice(-2)).toEqual(['Claude asks', 'Which repo?'])
+})
+
+test('Windows alerts are a PowerShell toast with the texts quoted, and the config under USERPROFILE', async ($, on) => {
+  const { clock, natives, writes } = host(on, [snapshot()], { os: 'win32' })
+  await $.session.start(SESSION)
+  await clock.settle()
+  await $.tool.call(ask("It's <b> & $x"))
+  await clock.settle()
+
+  const script = natives[0]?.at(-1) ?? ''
+  expect(natives[0]?.[0]).toBe('powershell.exe')
+  expect(script).toContain("[Security.SecurityElement]::Escape('It''s <b> & $x')")
+  expect(script).toContain('ToastNotificationManager')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'alert-done' })
+  expect(writes[0]).toContain('C:\\Users\\me/.config/agent-watch/config.json ')
+  await ui.unmount()
+})

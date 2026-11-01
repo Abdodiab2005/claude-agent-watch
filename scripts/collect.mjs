@@ -3,7 +3,6 @@
 // Every reader is read-only and fails soft: a missing CLI gives a note.
 import { execFileSync } from 'node:child_process'
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   fstatSync,
@@ -18,7 +17,9 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
+
+import { listProcesses, parseRelay } from './platform.mjs'
 
 const HOME = homedir()
 const NOW = Date.now()
@@ -101,6 +102,7 @@ function codex() {
             label: windowLabel(one.window_minutes),
             percentUsed: hasReset ? 0 : one.used_percent,
             resetsAt: hasReset ? undefined : resetsAt,
+            windowMs: one.window_minutes * 60_000,
           })
         }
         return row
@@ -129,7 +131,8 @@ function agyUsage(isBusy) {
     const out = execFileSync('agy', ['-p', '/usage', '--output-format', 'json', '--log-file', logPath], {
       encoding: 'utf8',
       timeout: 30_000,
-      env: { ...process.env, PATH: `${process.env.PATH ?? ''}:${join(HOME, '.local', 'bin')}` },
+      env: { ...process.env, PATH: `${process.env.PATH ?? ''}${delimiter}${join(HOME, '.local', 'bin')}` },
+      windowsHide: true,
     })
     const groups = JSON.parse(out).command?.data?.groups
     if (!Array.isArray(groups)) throw new Error('agy /usage answered no quota groups')
@@ -210,10 +213,12 @@ async function grok(runs) {
   const { config, note } = await grokBilling(runs.some(run => run.agent === 'grok'))
   if (config === undefined) return { ...row, note }
   const end = Date.parse(config.currentPeriod?.end ?? config.billingPeriodEnd)
+  const start = Date.parse(config.currentPeriod?.start ?? config.billingPeriodStart)
   row.windows.push({
     label: PERIOD_LABELS[config.currentPeriod?.type] ?? 'period',
     percentUsed: config.creditUsagePercent,
     resetsAt: end > NOW ? end : undefined,
+    windowMs: end > start ? end - start : undefined,
   })
   return row
 }
@@ -223,10 +228,6 @@ async function grok(runs) {
 // `--out-dir` (by default a fresh folder under <tmp>/delegate-relay) gets
 // the run's files and, at the end, result.json.
 const RELAY_TMP = join(tmpdir(), 'delegate-relay')
-
-function relayFlag(args, name) {
-  return new RegExp(`(?:^|\\s)--${name}\\s+(\\S+)`).exec(args)?.[1]
-}
 
 function defaultOutDir(cwd, startedAt) {
   const prefix = `${basename(cwd)}-`
@@ -238,24 +239,20 @@ function defaultOutDir(cwd, startedAt) {
 }
 
 function runs() {
-  const out = execFileSync('ps', ['-eo', 'pid=,etimes=,args='], { encoding: 'utf8' })
   const found = []
-  for (const line of out.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+node\s+\S*\/([a-z]+)-delegate\/scripts\/relay\.mjs(.*)$/.exec(line)
-    if (!match) continue
-    const args = match[4]
-    const cwd = relayFlag(args, 'cd') ?? ''
-    const startedAt = NOW - Number(match[2]) * 1000
+  for (const proc of listProcesses(NOW)) {
+    const relay = parseRelay(proc.command)
+    if (relay === undefined) continue
     found.push({
-      pid: Number(match[1]),
-      agent: match[3],
-      repo: basename(cwd) || '?',
-      brief: basename(relayFlag(args, 'brief') ?? '?'),
-      startedAt,
-      isReadOnly: args.includes('--read-only'),
-      cwd,
-      outDir: relayFlag(args, 'out-dir') ?? defaultOutDir(cwd, startedAt),
-      model: relayFlag(args, 'model'),
+      pid: proc.pid,
+      agent: relay.agent,
+      repo: basename(relay.cwd) || '?',
+      brief: basename(relay.brief),
+      startedAt: proc.startedAt,
+      isReadOnly: relay.isReadOnly,
+      cwd: relay.cwd,
+      outDir: relay.outDir ?? defaultOutDir(relay.cwd, proc.startedAt),
+      model: relay.model,
     })
   }
   return found.sort((a, b) => a.startedAt - b.startedAt)
@@ -274,6 +271,7 @@ function progressAt(run) {
         maxBuffer: 8 << 20,
         // Never take the index lock the implementer's own git calls need.
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+        windowsHide: true,
       })
       for (const entry of out.split('\0').slice(0, 300)) {
         if (entry.length > 3) last = Math.max(last, mtime(join(run.cwd, entry.slice(3))))
@@ -303,7 +301,6 @@ const STALL_MS = 20 * 60_000
 const CLAIMS = join(CACHE, 'claims')
 const RUNS_SEEN = join(CACHE, 'runs-seen.json')
 const FINISHED = join(CACHE, 'finished.json')
-const HISTORY = join(CACHE, 'history.jsonl')
 const DAY = 24 * HOUR
 
 function span(ms) {
@@ -326,7 +323,13 @@ function writeJson(path, value) {
   mkdirSync(CACHE, { recursive: true })
   const draft = `${path}.${process.pid}`
   writeFileSync(draft, JSON.stringify(value))
-  renameSync(draft, path)
+  try {
+    renameSync(draft, path)
+  } catch {
+    // Windows refuses to replace a file another process has open: write in place.
+    writeFileSync(path, JSON.stringify(value))
+    rmSync(draft, { force: true })
+  }
 }
 
 function claim(key) {
@@ -373,46 +376,25 @@ function endedRuns(running) {
   return ended
 }
 
-// Samples each window every 5 minutes into history.jsonl and projects when
-// it reaches 100% at the pace of the last 2 hours; kept only where that is
-// before the window resets.
+// When a window reaches 100% at the average pace since it opened (idle
+// hours included), kept only where that is before it resets. The pace of the
+// last hour or two overstates a week: it assumes the burst never stops.
+// A window under a fifth gone has too little history to judge. Only fixed
+// windows carry `windowMs`: Antigravity's buckets refill as they go, their
+// reset time moving with use, so they get no forecast.
+
 function forecasts(rows) {
-  const samples = []
-  try {
-    for (const line of readFileSync(HISTORY, 'utf8').split('\n')) {
-      try {
-        if (line) samples.push(JSON.parse(line))
-      } catch {
-        // A line two writers interleaved: skip it.
-      }
-    }
-  } catch {
-    // No history yet.
-  }
-  const recent = samples.filter(sample => NOW - sample.t < 3 * HOUR)
-  const added = []
   const found = {}
   for (const row of rows) {
     for (const window of row.windows) {
-      const key = `${row.id}|${window.label}|${window.resetsAt ?? ''}`
-      const series = recent.filter(sample => sample.k === key)
-      const last = series[series.length - 1]
-      if (last === undefined || NOW - last.t >= 5 * 60_000) added.push({ t: NOW, k: key, p: window.percentUsed })
-      const first = series.find(sample => NOW - sample.t <= 2 * HOUR)
-      if (first === undefined || NOW - first.t < 15 * 60_000 || window.percentUsed >= 100) continue
-      const rate = (window.percentUsed - first.p) / (NOW - first.t)
-      if (rate <= 0) continue
-      const outAt = Math.round(NOW + (100 - window.percentUsed) / rate)
-      if (window.resetsAt === undefined || outAt < window.resetsAt) found[`${row.id}|${window.label}`] = outAt
+      const windowMs = window.windowMs
+      if (window.resetsAt === undefined || windowMs === undefined) continue
+      const elapsed = NOW - (window.resetsAt - windowMs)
+      if (elapsed < windowMs / 5 || window.percentUsed <= 0 || window.percentUsed >= 100) continue
+      const outAt = Math.round(NOW + ((100 - window.percentUsed) * elapsed) / window.percentUsed)
+      if (outAt < window.resetsAt) found[`${row.id}|${window.label}`] = outAt
     }
   }
-  mkdirSync(CACHE, { recursive: true })
-  if (samples.length > recent.length + 100) {
-    const draft = `${HISTORY}.${process.pid}`
-    writeFileSync(draft, recent.map(sample => `${JSON.stringify(sample)}\n`).join(''))
-    renameSync(draft, HISTORY)
-  }
-  if (added.length > 0) appendFileSync(HISTORY, added.map(sample => `${JSON.stringify(sample)}\n`).join(''))
   return found
 }
 
@@ -423,11 +405,12 @@ function limitAlerts(rows, outAts) {
       const period = window.resetsAt ?? `day-${Math.floor(NOW / DAY)}`
       const reset = window.resetsAt === undefined ? '' : `, resets in ${span(window.resetsAt - NOW)}`
       if (window.percentUsed >= WARN_PERCENT && claim(`warn-${row.id}-${window.label}-${period}`)) {
-        alerts.push({ title: 'Usage limit close', body: `${row.name} ${window.label} limit at ${Math.round(window.percentUsed)}%${reset}` })
+        alerts.push({ kind: 'limit', title: 'Usage limit close', body: `${row.name} ${window.label} limit at ${Math.round(window.percentUsed)}%${reset}` })
       }
       const outAt = outAts[`${row.id}|${window.label}`]
       if (outAt !== undefined && window.percentUsed >= 50 && claim(`forecast-${row.id}-${window.label}-${period}`)) {
         alerts.push({
+          kind: 'limit',
           title: 'Usage limit forecast',
           body: `${row.name} ${window.label} runs out in ~${span(outAt - NOW)} at this pace${reset}`,
         })
@@ -452,7 +435,7 @@ let error
 try {
   running = runs()
 } catch (failure) {
-  error = `ps failed: ${String(failure?.message ?? failure).slice(0, 80)}`
+  error = `process list failed: ${String(failure?.message ?? failure).slice(0, 80)}`
 }
 for (const run of running) run.progressAt = progressAt(run)
 const agents = [
@@ -469,6 +452,7 @@ try {
     for (const done of endedRuns(running)) {
       const files = done.files === undefined ? '' : ` · ${done.files} file${done.files === 1 ? '' : 's'}`
       alerts.push({
+        kind: 'relay',
         title: `${done.agent} ${done.status}`,
         body: `${done.repo} · ${done.brief}${files} · ${span(done.endedAt - done.startedAt)}`,
       })
@@ -477,7 +461,7 @@ try {
   for (const run of running) {
     const idleMs = NOW - run.progressAt
     if (NOW - run.startedAt >= STALL_MS && idleMs >= STALL_MS && claim(`stuck-${runKey(run)}-${Math.floor(run.progressAt / 60_000)}`)) {
-      alerts.push({ title: `${run.agent} may be stuck`, body: `${run.repo} · ${run.brief}: no file change for ${span(idleMs)}` })
+      alerts.push({ kind: 'relay', title: `${run.agent} may be stuck`, body: `${run.repo} · ${run.brief}: no file change for ${span(idleMs)}` })
     }
   }
   const rows = [{ id: 'claude', name: 'Claude', windows: claudeWindows() }, ...agents]
