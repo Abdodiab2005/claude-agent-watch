@@ -1,6 +1,6 @@
 {
   "name": "agent-watch",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Side pane with the 5-hour and weekly limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop, ntfy and Telegram alerts",
   "author": {
     "name": "Abdodiab2005"
@@ -23,6 +23,13 @@
       "type": "string",
       "title": "Telegram bot token",
       "description": "The token @BotFather gave your bot, for alerts in Telegram. Kept in Claude Code secure storage. Leave empty for no Telegram alerts.",
+      "sensitive": true,
+      "required": false
+    },
+    "ntfyToken": {
+      "type": "string",
+      "title": "ntfy access token",
+      "description": "An access token (tk_...) for an ntfy server that requires login to publish. Kept in Claude Code secure storage. Leave empty for ntfy.sh or an open server.",
       "sensitive": true,
       "required": false
     }

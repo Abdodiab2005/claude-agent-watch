@@ -104,7 +104,28 @@ ntfy and Telegram can be used one at a time or together.
 ```
 
 Then install the ntfy app on your phone and subscribe to the topic. Anyone who
-knows the topic name can read the alerts, so keep it private. Alerts carry
+knows the topic name can read the alerts, so keep it private.
+
+A self-hosted server that asks for a login to publish (`auth-default-access:
+deny-all`, or a locked topic) answers the test alert with HTTP 403, and
+`/agent-watch-phone` then prints these steps:
+
+1. On the server, give a user write access and create a token:
+   `ntfy access <user> <topic> rw`, then `ntfy token add --label=agent-watch <user>`.
+2. Save the token in Claude Code's secure storage, from your own terminal:
+
+   ```
+   read -rs T && printf '{"ntfyToken":"%s"}' "$T" | claude plugin configure agent-watch@claude-agent-watch --values-stdin; unset T
+   ```
+
+3. Run `/reload-plugins`, then `/agent-watch-phone test`.
+
+The token is the sensitive option `ntfyToken`, kept like the Telegram token and
+sent only to the ntfy server set up, as `Authorization: Bearer`. In the ntfy
+app, add the same user under Settings, Manage users, so the app can read the
+topic. On an iPhone, the server also needs `upstream-base-url:
+"https://ntfy.sh"` in `server.yml` for alerts to arrive while the app is
+closed. Alerts carry
 repository and brief file names and limit figures, never code or tokens. The
 setting is kept in `~/.config/agent-watch/config.json`.
 

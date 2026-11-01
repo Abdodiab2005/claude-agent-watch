@@ -144,13 +144,28 @@ async function desktop($: EngineInterface, title: string, body: string): Promise
 // Phone alerts go to an ntfy topic URL (/agent-watch-phone) and to a Telegram
 // chat (/agent-watch-telegram). Both are kept in
 // ~/.config/agent-watch/config.json so every session and copy reads them. The
-// Telegram bot token is not: it is the manifest's sensitive `telegramBotToken`
-// option, which Claude Code keeps in its secure storage and hands to
-// `register` alone. It lives in this module's memory, goes only into
-// api.telegram.org request URLs, and is never stored, drawn or returned.
+// tokens are not: they are the manifest's sensitive options `ntfyToken` and
+// `telegramBotToken`, which Claude Code keeps in its secure storage and hands
+// to `register` alone. They live in this module's memory, go only to the ntfy
+// server set up and to api.telegram.org, and are never stored, drawn or
+// returned.
 type Config = { ntfyUrl?: string; telegramChatId?: string; off?: string[] }
 
 let telegramToken: string | undefined
+let ntfyToken: string | undefined
+
+function secret(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+}
+
+// The line that saves one sensitive option from a hidden prompt, for the
+// person's own shell; `configure` keeps the options it is not given.
+async function saveLine($: EngineInterface, option: string, prompt: string): Promise<string> {
+  const id = await pluginId($)
+  return (await hostPlatform($)) === 'win32'
+    ? `   $s = Read-Host -AsSecureString '${prompt}'; $t = [Net.NetworkCredential]::new('', $s).Password; '{"${option}":"' + $t + '"}' | claude plugin configure ${id} --values-stdin; Remove-Variable s, t`
+    : `   read -rs T && printf '{"${option}":"%s"}' "$T" | claude plugin configure ${id} --values-stdin; unset T`
+}
 
 async function configPath($: EngineInterface): Promise<string | undefined> {
   const home =
@@ -173,13 +188,32 @@ async function writeConfig($: EngineInterface, config: Config): Promise<void> {
   await $.fs.write(path, `${JSON.stringify(config, null, 2)}\n`)
 }
 
-async function phone($: EngineInterface, url: string, title: string, body: string): Promise<boolean> {
+// The HTTP status of the publish, 0 when the server could not be reached.
+async function phone($: EngineInterface, url: string, title: string, body: string): Promise<number> {
   // An HTTP header carries ASCII only; the body takes any text.
-  const headers = { Title: title.replace(/[^\x20-\x7e]/g, '').trim() || 'agent-watch', Tags: 'robot' }
+  const headers: Record<string, string> = {
+    Title: title.replace(/[^\x20-\x7e]/g, '').trim() || 'agent-watch',
+    Tags: 'robot',
+  }
+  if (ntfyToken !== undefined) headers.Authorization = `Bearer ${ntfyToken}`
   return $.http
     .fetch(url, { method: 'POST', headers, body })
-    .then(response => response.ok)
-    .catch(() => false)
+    .then(response => response.status)
+    .catch(() => 0)
+}
+
+async function ntfySetup($: EngineInterface, server: string, topic: string): Promise<string> {
+  return [
+    `${server} asks for a login to publish to ${topic}.`,
+    '1. On the server, give a user write access to the topic and create a token for it:',
+    `   ntfy access <user> ${topic} rw`,
+    '   ntfy token add --label=agent-watch <user>',
+    '2. Save the token (tk_...) in Claude Code secure storage. In your own terminal (not in a Claude prompt), run this and paste the token at the hidden prompt:',
+    await saveLine($, 'ntfyToken', 'ntfy token'),
+    '   Or open /plugin, then agent-watch, then Configure.',
+    '3. Run /reload-plugins, then /agent-watch-phone test.',
+    `In the ntfy app, add the same user under Settings, Manage users, for ${server}, so the app can read the topic.`,
+  ].join('\n')
 }
 
 type TelegramChat = { id: number; type: string; first_name?: string; title?: string }
@@ -263,11 +297,7 @@ async function pluginId($: EngineInterface): Promise<string> {
 }
 
 async function telegramSetup($: EngineInterface): Promise<string> {
-  const id = await pluginId($)
-  const save =
-    (await hostPlatform($)) === 'win32'
-      ? `   $s = Read-Host -AsSecureString 'Token'; $t = [Net.NetworkCredential]::new('', $s).Password; '{"telegramBotToken":"' + $t + '"}' | claude plugin configure ${id} --values-stdin; Remove-Variable s, t`
-      : `   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure ${id} --values-stdin; unset T`
+  const save = await saveLine($, 'telegramBotToken', 'Bot token')
   return [
     'To get alerts in Telegram:',
     '1. In Telegram, open @BotFather, send /newbot, and copy the token it gives you.',
@@ -372,8 +402,8 @@ async function collect($: EngineInterface): Promise<void> {
 }
 
 export const register: Register = (on, options) => {
-  const token = options.telegramBotToken
-  telegramToken = typeof token === 'string' && token.trim() !== '' ? token.trim() : undefined
+  telegramToken = secret(options.telegramBotToken)
+  ntfyToken = secret(options.ntfyToken)
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -425,7 +455,7 @@ export const register: Register = (on, options) => {
     const chosen = url
     await writeConfig($, { ...config, ntfyUrl: chosen })
     await refreshAlerts($)
-    const isSent = await phone(
+    const status = await phone(
       $,
       chosen,
       'agent-watch',
@@ -433,9 +463,23 @@ export const register: Register = (on, options) => {
     )
     const cut = chosen.lastIndexOf('/')
     const server = chosen.slice(0, cut)
+    const topic = chosen.slice(cut + 1)
+    if ((status === 401 || status === 403) && ntfyToken === undefined) {
+      return {
+        text: `Phone alerts go to ${chosen}, but the test alert was refused (HTTP ${status}).\n${await ntfySetup($, server, topic)}`,
+      }
+    }
+    const outcome =
+      status >= 200 && status < 300
+        ? 'a test alert was sent'
+        : status === 401 || status === 403
+          ? `the server refused the saved token (HTTP ${status}); check that its user may write to ${topic}`
+          : status === 0
+            ? 'the server could not be reached'
+            : `the test alert failed (HTTP ${status})`
     return {
       text: [
-        `Phone alerts go to ${chosen}: ${isSent ? 'a test alert was sent' : 'the test alert failed to send'}.`,
+        `Phone alerts go to ${chosen}: ${outcome}.`,
         `On your phone, install the ntfy app, tap +, and subscribe to the topic ${chosen.slice(cut + 1)}${server === 'https://ntfy.sh' ? '' : ` on the server ${server}`}.`,
         'Anyone who knows the topic name can read these alerts, so keep it private.',
         'Run /agent-watch-phone off to stop them.',

@@ -59,9 +59,15 @@ const ok = (stdout = '') => ({
 // Stands for the engine and the host under the mod: the collector's output
 // comes from `outputs`, one per run; desktop alerts, phone posts and config
 // writes are recorded.
-type HostOptions = { ntfyUrl?: string; telegramChatId?: string; os?: 'linux' | 'darwin' | 'win32' }
+type HostOptions = {
+  ntfyUrl?: string
+  telegramChatId?: string
+  os?: 'linux' | 'darwin' | 'win32'
+  /** What the ntfy server answers a publish without the right token. */
+  ntfyLocked?: boolean
+}
 
-function host(on: On, outputs: Snapshot[], { os = 'linux', ...stored }: HostOptions = {}) {
+function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, ...stored }: HostOptions = {}) {
   const clock = mock.clock(on, { now: NOW })
   const alerts: string[] = []
   const phones: string[] = []
@@ -88,8 +94,14 @@ function host(on: On, outputs: Snapshot[], { os = 'linux', ...stored }: HostOpti
   on('http.fetch', (_, e) => {
     const telegram = /^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)$/.exec(e.url)
     if (telegram === null) {
-      phones.push(`${e.url} | ${e.init?.headers?.Title} | ${e.init?.body}`)
-      return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
+      const auth = e.init?.headers?.Authorization
+      phones.push(`${e.url} | ${e.init?.headers?.Title} | ${e.init?.body}${auth === undefined ? '' : ` | ${auth}`}`)
+      const isRefused = ntfyLocked && auth !== 'Bearer tk_test'
+      return {
+        value: isRefused
+          ? { status: 403, ok: false, headers: {}, text: '{"http":403,"error":"forbidden"}' }
+          : { status: 200, ok: true, headers: {}, text: '{}' },
+      }
     }
     expect(telegram[1]).toBe(TOKEN)
     telegrams.push(`${telegram[2]} ${e.init?.body}`)
@@ -392,3 +404,39 @@ test('Windows alerts are a PowerShell toast with the texts quoted, and the confi
   expect(writes[0]).toContain('C:\\Users\\me/.config/agent-watch/config.json ')
   await ui.unmount()
 })
+
+test('a server that asks for a login gets the token steps, and the saved token goes in a Bearer header', async ($, on) => {
+  const own = 'https://notify.example.net/alerts'
+  const { clock, phones } = host(on, [snapshot()], { ntfyLocked: true })
+  await $.session.start(SESSION)
+  await clock.settle()
+
+  const refused = await $.command.run(typed('agent-watch-phone', own))
+  expect(refused.text).toContain('the test alert was refused (HTTP 403)')
+  expect(refused.text).toContain('ntfy access <user> alerts rw')
+  expect(refused.text).toContain('ntfy token add --label=agent-watch <user>')
+  expect(refused.text).toContain(`printf '{"ntfyToken":"%s"}'`)
+  expect(phones[0]).toBe(
+    `${own} | agent-watch | Phone alerts work: questions, finished turns, relays and limits arrive here.`,
+  )
+})
+
+test(
+  'with ntfyToken saved, the test alert and every alert carry it, and no output shows it',
+  { options: { ntfyToken: 'tk_test' } },
+  async ($, on) => {
+    const own = 'https://notify.example.net/alerts'
+    const { clock, phones, writes } = host(on, [snapshot()], { ntfyLocked: true, ntfyUrl: own })
+    await $.session.start(SESSION)
+    await clock.settle()
+
+    const sent = await $.command.run(typed('agent-watch-phone', 'test'))
+    expect(sent.text).toContain(`Phone alerts go to ${own}: a test alert was sent.`)
+    expect(sent.text).not.toContain('tk_test')
+    expect(writes.join('\n')).not.toContain('tk_test')
+
+    await $.tool.call(ask('Ship it?'))
+    await clock.settle()
+    expect(phones.at(-1)).toBe(`${own} | Claude asks | Ship it? | Bearer tk_test`)
+  },
+)
