@@ -114,7 +114,7 @@ function windowsToast(title: string, body: string): string {
 // The desktop's own notifications: notify-send on Linux (with the Claude
 // desktop app's icon where installed), osascript on macOS, a toast on
 // Windows. Where that fails, the person's Claude Code channel takes it.
-async function desktop($: EngineInterface, title: string, body: string): Promise<void> {
+async function desktop($: EngineInterface, title: string, body: string): Promise<boolean> {
   const os = await hostPlatform($)
   const argv =
     os === 'darwin'
@@ -134,11 +134,11 @@ async function desktop($: EngineInterface, title: string, body: string): Promise
         : ['notify-send', '--app-name=Claude Code', `--icon=${ICON}`, title, body]
   try {
     const sent = await $.process.run(argv, { timeoutMs: 10_000 })
-    if (sent.exitCode === 0) return
+    if (sent.exitCode === 0) return true
   } catch {
     // The tool is missing on this host: fall through to the engine's channel.
   }
-  await $.ui.notify(body, { title }).catch(() => undefined)
+  return $.ui.notify(body, { title }).then(() => true).catch(() => false)
 }
 
 // Phone alerts go to an ntfy topic URL (/agent-watch-phone) and to a Telegram
@@ -269,15 +269,55 @@ async function toggleAlert($: EngineInterface, id: string): Promise<void> {
   await refreshAlerts($)
 }
 
-async function alert($: EngineInterface, kind: AlertKind, title: string, body: string): Promise<void> {
-  if (!(await read($, isNotifying))) return
+// The collector offers stable event ids on every poll. Acquire a machine-wide
+// lease for each enabled channel and mark it sent only after delivery succeeds.
+// Failed/disabled channels remain eligible on the next poll; the other
+// channels are not sent again. A crashed sender's lease expires after 2m.
+async function deliverOnce(
+  $: EngineInterface,
+  id: string | undefined,
+  channel: string,
+  destination: string,
+  send: () => Promise<boolean>,
+): Promise<boolean> {
+  if (id === undefined) return send().catch(() => false)
+  const script = `${$.plugin.root}/scripts/delivery.mjs`
+  const key = `${id}:${channel}:${destination}`
+  const reserved = await $.process.run(['node', script, 'acquire', key], { timeoutMs: 5_000 }).catch(() => undefined)
+  const lease = reserved?.exitCode === 0 ? reserved.stdout.trim().match(/^lease:([\w-]+)$/)?.[1] : undefined
+  if (lease === undefined) return false
+
+  let success = false
+  try { success = await send() } catch { /* retry on the next poll */ }
+  await $.process.run(['node', script, success ? 'commit' : 'release', key, lease], { timeoutMs: 5_000 })
+    .catch(() => undefined)
+  return success
+}
+
+async function alert(
+  $: EngineInterface,
+  kind: AlertKind,
+  title: string,
+  body: string,
+  id?: string,
+): Promise<boolean> {
+  if (!(await read($, isNotifying))) return false
   const { ntfyUrl, telegramChatId, off = [] } = await readConfig($)
-  if (off.includes(kind)) return
-  await Promise.all([
-    off.includes('desktop') ? undefined : desktop($, title, body),
-    ntfyUrl === undefined || off.includes('ntfy') ? undefined : phone($, ntfyUrl, title, body),
-    telegramChatId === undefined || off.includes('telegram') ? undefined : telegram($, telegramChatId, title, body),
-  ])
+  if (off.includes(kind)) return false
+  const tasks: Promise<boolean>[] = []
+  if (!off.includes('desktop')) {
+    tasks.push(deliverOnce($, id, 'desktop', 'local', () => desktop($, title, body)))
+  }
+  if (ntfyUrl !== undefined && !off.includes('ntfy')) {
+    tasks.push(deliverOnce($, id, 'ntfy', ntfyUrl, async () => {
+      const status = await phone($, ntfyUrl, title, body)
+      return status >= 200 && status < 300
+    }))
+  }
+  if (telegramChatId !== undefined && telegramToken !== undefined && !off.includes('telegram')) {
+    tasks.push(deliverOnce($, id, 'telegram', telegramChatId, () => telegram($, telegramChatId, title, body)))
+  }
+  return (await Promise.all(tasks)).some(Boolean)
 }
 
 // The id `claude plugin configure` takes: the installed entry that reads this
@@ -386,8 +426,7 @@ async function collect($: EngineInterface): Promise<void> {
     await update($, snapshot, () => kept)
     // The collector claimed these for this session alone: send each once.
     for (const one of alerts) {
-      $.ui.toast(one.body)
-      await alert($, one.kind ?? 'relay', one.title, one.body)
+      if (await alert($, one.kind ?? 'relay', one.title, one.body, one.id)) $.ui.toast(one.body)
     }
 
     await refreshAlerts($)
@@ -637,7 +676,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId === undefined && !e.isAborted && e.durationMs >= FINISH_ALERT_MS) {
-      void alert($, 'done', `Claude finished (${span(e.durationMs)})`, firstLine(e.answer) || 'The turn ended.')
+      void alert($, 'done', `Claude finished (${span(e.durationMs)})`, 'The turn ended. Open Claude Code to review the response.')
     }
 
     return done

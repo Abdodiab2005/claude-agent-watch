@@ -2,6 +2,7 @@
 // relay processes running now, and prints one JSON snapshot on stdout.
 // Every reader is read-only and fails soft: a missing CLI gives a note.
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   closeSync,
   existsSync,
@@ -25,6 +26,7 @@ const HOME = homedir()
 const NOW = Date.now()
 const HOUR = 3_600_000
 const TAIL_BYTES = 1_048_576
+const eventId = key => createHash('sha256').update(key).digest('hex').slice(0, 32)
 
 function tail(path, bytes = TAIL_BYTES) {
   const fd = openSync(path, 'r')
@@ -343,9 +345,12 @@ function claim(key) {
 }
 
 function pruneClaims() {
-  for (const entry of list(CLAIMS)) {
-    const path = join(CLAIMS, entry.name)
-    if (NOW - mtime(path) > 8 * DAY) rmSync(path, { force: true })
+  for (const dir of [CLAIMS, join(CACHE, 'deliveries')]) {
+    for (const entry of list(dir)) {
+      const path = join(dir, entry.name)
+      // Keep in-flight leases until delivery.mjs expires them after 2m.
+      if (NOW - mtime(path) > 8 * DAY) rmSync(path, { force: true })
+    }
   }
 }
 
@@ -404,14 +409,18 @@ function limitAlerts(rows, outAts) {
     for (const window of row.windows) {
       const period = window.resetsAt ?? `day-${Math.floor(NOW / DAY)}`
       const reset = window.resetsAt === undefined ? '' : `, resets in ${span(window.resetsAt - NOW)}`
-      if (window.percentUsed >= WARN_PERCENT && claim(`warn-${row.id}-${window.label}-${period}`)) {
-        alerts.push({ kind: 'limit', title: 'Usage limit close', body: `${row.name} ${window.label} limit at ${Math.round(window.percentUsed)}%${reset}` })
+      if (window.percentUsed >= WARN_PERCENT) {
+        alerts.push({
+          id: eventId(`warn:${row.id}:${window.label}:${period}`),
+          kind: 'limit', title: 'Usage limit close',
+          body: `${row.name} ${window.label} limit at ${Math.round(window.percentUsed)}%${reset}`,
+        })
       }
       const outAt = outAts[`${row.id}|${window.label}`]
-      if (outAt !== undefined && window.percentUsed >= 50 && claim(`forecast-${row.id}-${window.label}-${period}`)) {
+      if (outAt !== undefined && window.percentUsed >= 50) {
         alerts.push({
-          kind: 'limit',
-          title: 'Usage limit forecast',
+          id: eventId(`forecast:${row.id}:${window.label}:${period}`),
+          kind: 'limit', title: 'Usage limit forecast',
           body: `${row.name} ${window.label} runs out in ~${span(outAt - NOW)} at this pace${reset}`,
         })
       }
@@ -448,20 +457,26 @@ const alerts = []
 let outAts = {}
 try {
   pruneClaims()
-  if (error === undefined) {
-    for (const done of endedRuns(running)) {
-      const files = done.files === undefined ? '' : ` · ${done.files} file${done.files === 1 ? '' : 's'}`
-      alerts.push({
-        kind: 'relay',
-        title: `${done.agent} ${done.status}`,
-        body: `${done.repo} · ${done.brief}${files} · ${span(done.endedAt - done.startedAt)}`,
-      })
-    }
+  if (error === undefined) endedRuns(running)
+  // Re-offer recent completions instead of claiming a notification before
+  // sending it. Per-channel receipts suppress repeat delivery.
+  for (const done of readJson(FINISHED, []).filter(one => NOW - one.endedAt < HOUR).slice(0, 10)) {
+    const files = done.files === undefined ? '' : ` · ${done.files} file${done.files === 1 ? '' : 's'}`
+    alerts.push({
+      id: eventId(`ended:${done.agent}:${done.repo}:${done.brief}:${done.startedAt}`),
+      kind: 'relay',
+      title: `${done.agent} ${done.status}`,
+      body: `${done.repo} · ${done.brief}${files} · ${span(done.endedAt - done.startedAt)}`,
+    })
   }
   for (const run of running) {
     const idleMs = NOW - run.progressAt
-    if (NOW - run.startedAt >= STALL_MS && idleMs >= STALL_MS && claim(`stuck-${runKey(run)}-${Math.floor(run.progressAt / 60_000)}`)) {
-      alerts.push({ kind: 'relay', title: `${run.agent} may be stuck`, body: `${run.repo} · ${run.brief}: no file change for ${span(idleMs)}` })
+    if (NOW - run.startedAt >= STALL_MS && idleMs >= STALL_MS) {
+      alerts.push({
+        id: eventId(`stuck:${runKey(run)}:${run.startedAt}:${run.progressAt}`),
+        kind: 'relay', title: `${run.agent} may be stuck`,
+        body: `${run.repo} · ${run.brief}: no file change for ${span(idleMs)}`,
+      })
     }
   }
   const rows = [{ id: 'claude', name: 'Claude', windows: claudeWindows() }, ...agents]

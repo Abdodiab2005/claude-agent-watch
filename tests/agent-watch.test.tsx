@@ -65,9 +65,11 @@ type HostOptions = {
   os?: 'linux' | 'darwin' | 'win32'
   /** What the ntfy server answers a publish without the right token. */
   ntfyLocked?: boolean
+  ntfyFailures?: number
+  off?: string[]
 }
 
-function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, ...stored }: HostOptions = {}) {
+function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, ntfyFailures = 0, ...stored }: HostOptions = {}) {
   const clock = mock.clock(on, { now: NOW })
   const alerts: string[] = []
   const phones: string[] = []
@@ -75,6 +77,9 @@ function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, .
   const writes: string[] = []
   const telegrams: string[] = []
   const natives: (readonly string[])[] = []
+  const delivered = new Set<string>()
+  const leased = new Map<string, string>()
+  let ntfyFailuresLeft = ntfyFailures
   let config = Object.keys(stored).length === 0 ? undefined : JSON.stringify(stored)
   mock.store(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -97,10 +102,13 @@ function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, .
       const auth = e.init?.headers?.Authorization
       phones.push(`${e.url} | ${e.init?.headers?.Title} | ${e.init?.body}${auth === undefined ? '' : ` | ${auth}`}`)
       const isRefused = ntfyLocked && auth !== 'Bearer tk_test'
+      const temporaryFailure = !isRefused && ntfyFailuresLeft-- > 0
       return {
         value: isRefused
           ? { status: 403, ok: false, headers: {}, text: '{"http":403,"error":"forbidden"}' }
-          : { status: 200, ok: true, headers: {}, text: '{}' },
+          : temporaryFailure
+            ? { status: 503, ok: false, headers: {}, text: '{"http":503,"error":"unavailable"}' }
+            : { status: 200, ok: true, headers: {}, text: '{}' },
       }
     }
     expect(telegram[1]).toBe(TOKEN)
@@ -125,6 +133,20 @@ function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, .
     },
   }))
   on('process.run', (_, e) => {
+    if (e.argv[1]?.endsWith('/delivery.mjs')) {
+      const [action, key, owner] = e.argv.slice(2)
+      if (action === 'acquire') {
+        if (delivered.has(key)) return ok('sent')
+        if (leased.has(key)) return ok('busy')
+        leased.set(key, 'test-lease')
+        return ok('lease:test-lease')
+      }
+      if (leased.get(key) === owner) {
+        if (action === 'commit') delivered.add(key)
+        leased.delete(key)
+      }
+      return ok()
+    }
     if (e.argv[0] === 'notify-send') {
       expect(e.argv).toContain('--icon=claude-desktop')
       alerts.push(
@@ -209,11 +231,11 @@ test('the pane draws limits, a forecast, a stalled relay, a finished one and the
 })
 
 test(
-  'each alert the collector claimed reaches the desktop, ntfy and Telegram once',
+  'each candidate alert reaches the desktop, ntfy and Telegram once across polls',
   { options: { telegramBotToken: TOKEN } },
   async ($, on) => {
-    const claimed = snapshot({ alerts: [{ title: 'codex completed', body: 'shop · brief-2.txt · 4 files · 12m' }] })
-    const { clock, alerts, phones, collects, telegrams } = host(on, [claimed, snapshot()], {
+    const claimed = snapshot({ alerts: [{ id: 'relay-completed', title: 'codex completed', body: 'shop · brief-2.txt · 4 files · 12m' }] })
+    const { clock, alerts, phones, collects, telegrams } = host(on, [claimed], {
       ntfyUrl: NTFY,
       telegramChatId: '42',
     })
@@ -234,6 +256,44 @@ test(
     expect(telegrams).toHaveLength(1)
   },
 )
+
+
+test('a disabled destination does not consume a shared alert', async ($, on) => {
+  const pending = snapshot({ alerts: [{ id: 'relay-stuck', kind: 'relay', title: 'codex stuck', body: 'shop idle' }] })
+  const { clock, alerts, phones } = host(on, [pending], { ntfyUrl: NTFY, off: ['desktop', 'ntfy'] })
+  await $.session.start(SESSION)
+  await clock.settle()
+  expect(alerts).toHaveLength(0)
+  expect(phones).toHaveLength(0)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'alert-ntfy' })
+  await clock.advance(30_000)
+  await clock.settle()
+  expect(phones).toHaveLength(1)
+  expect(alerts).toHaveLength(0)
+  await clock.advance(30_000)
+  await clock.settle()
+  expect(phones).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('an ntfy transport failure retries without repeating a successful desktop alert', async ($, on) => {
+  const pending = snapshot({ alerts: [{ id: 'limit-week', kind: 'limit', title: 'Usage limit close', body: 'week 90%' }] })
+  const { clock, alerts, phones } = host(on, [pending], { ntfyUrl: NTFY, ntfyFailures: 1 })
+  await $.session.start(SESSION)
+  await clock.settle()
+  expect(alerts).toHaveLength(1)
+  expect(phones).toHaveLength(1)
+  await clock.advance(30_000)
+  await clock.settle()
+  expect(alerts).toHaveLength(1)
+  expect(phones).toHaveLength(2)
+  await clock.advance(30_000)
+  await clock.settle()
+  expect(alerts).toHaveLength(1)
+  expect(phones).toHaveLength(2)
+})
 
 test('a dispatch to an agent past 90% is refused with the agents that have room', async ($, on) => {
   const { clock } = host(on, [snapshot()])
