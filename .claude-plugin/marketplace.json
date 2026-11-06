@@ -1,14 +1,14 @@
 {
-  "name": "claude-agent-watch",
+  "name": "leviro-agent-watcher",
   "owner": {
     "name": "Abdodiab2005"
   },
   "metadata": {
-    "description": "agent-watch: usage limits, running relays, the plan and alerts for Claude Code orchestrators"
+    "description": "leviro-agent-watcher: usage limits, running relays, plans and alerts for Claude Code and Codex"
   },
   "plugins": [
     {
-      "name": "agent-watch",
+      "name": "leviro-agent-watcher",
       "source": "./",
       "description": "Side pane with usage limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop and phone alerts"
     }

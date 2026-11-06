@@ -1,5 +1,5 @@
 {
-  "description": "Agent Watch for Codex; notifications never decide permission requests.",
+  "description": "Leviro Agent Watcher for Codex; notifications never decide permission requests.",
   "hooks": {
     "SessionStart": [
       {

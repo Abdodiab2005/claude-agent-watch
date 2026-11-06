@@ -1,4 +1,4 @@
-// Atomic, per-channel delivery leases shared by all agent-watch sessions.
+// Atomic, per-channel delivery leases shared by all watcher sessions.
 // An event is marked sent only after its transport confirms success.
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'

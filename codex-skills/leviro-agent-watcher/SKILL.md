@@ -1,6 +1,6 @@
 ---
-name: agent-watch
-description: Show local coding-agent usage limits, delegate relays, Codex plans and subagents, or manage Agent Watch alerts and its live terminal monitor.
+name: leviro-agent-watcher
+description: Show local coding-agent usage limits, delegate relays, Codex plans and subagents, or manage Leviro Agent Watcher alerts and its live terminal monitor.
 ---
 
 Resolve `../../scripts/codex.mjs` relative to this file's directory and run it
@@ -24,5 +24,5 @@ service.
 Codex uses hooks for automatic alerts, plan/subagent tracking and relay quota
 routing. If these are inactive, direct the user to `/hooks` to review/trust the
 plugin hooks and restart the session. Do not bypass hook trust or change
-approval decisions. `/agent-watch` in Claude opens its native pane; Codex's
+approval decisions. `/leviro-agent-watcher` in Claude opens its native pane; Codex's
 skill gives a text view and a separate live terminal monitor.

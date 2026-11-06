@@ -1,12 +1,12 @@
 {
-  "name": "agent-watch",
-  "version": "0.5.0",
+  "name": "leviro-agent-watcher",
+  "version": "0.5.1",
   "description": "Side pane with the 5-hour and weekly limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop, ntfy and Telegram alerts",
   "author": {
     "name": "Abdodiab2005"
   },
-  "homepage": "https://github.com/Abdodiab2005/claude-agent-watch",
-  "repository": "https://github.com/Abdodiab2005/claude-agent-watch",
+  "homepage": "https://github.com/Abdodiab2005/leviro-agent-watcher",
+  "repository": "https://github.com/Abdodiab2005/leviro-agent-watcher",
   "license": "MIT",
   "keywords": [
     "usage",

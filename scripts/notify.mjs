@@ -67,7 +67,7 @@ export async function notify(alert, {
   })]
   if (typeof config.ntfyUrl === 'string' && /^https?:\/\/[^\s]+\/[\w-]{1,64}$/.test(config.ntfyUrl)) {
     pending.push(once('ntfy', config.ntfyUrl, async () => {
-      const headers = { Title: alert.title.replace(/[^\x20-\x7e]/g, '').trim() || 'agent-watch', Tags: 'robot' }
+      const headers = { Title: alert.title.replace(/[^\x20-\x7e]/g, '').trim() || 'leviro-agent-watcher', Tags: 'robot' }
       if (env.AGENT_WATCH_NTFY_TOKEN) headers.Authorization = `Bearer ${env.AGENT_WATCH_NTFY_TOKEN}`
       const response = await request(config.ntfyUrl, {
         method: 'POST', headers, body: alert.body, redirect: 'error', signal: AbortSignal.timeout(10_000),

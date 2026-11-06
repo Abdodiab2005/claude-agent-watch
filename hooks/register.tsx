@@ -14,8 +14,8 @@ import type {
   SubagentRun,
 } from '../types'
 
-const PANE = 'agent-watch'
-const TITLE = 'Agents'
+const PANE = 'leviro-agent-watcher'
+const TITLE = 'Leviro Agent Watcher'
 const POLL_MS = 30_000
 // A main turn shorter than this ends while the person still watches.
 const FINISH_ALERT_MS = 15_000
@@ -26,12 +26,12 @@ const BUSY: readonly string[] = ['pending', 'running', 'waiting']
 const STALL_MS = 20 * 60_000
 
 // Each shape tag declines what an earlier version of the mod stored.
-const snapshot = atom({ plugin: 'agent-watch', key: 'snapshot' } as const, null, { shape: 'snapshot-1' })
-const claude = atom({ plugin: 'agent-watch', key: 'claude' } as const, [], { shape: 'claude-1' })
-const plan = atom({ plugin: 'agent-watch', key: 'plan' } as const, [], { shape: 'plan-1' })
-const subagents = atom({ plugin: 'agent-watch', key: 'subagents' } as const, [], { shape: 'subagents-1' })
-const isNotifying = atom({ plugin: 'agent-watch', key: 'isNotifying' } as const, true)
-const alertPrefs = atom({ plugin: 'agent-watch', key: 'alerts' } as const, { channels: [], off: [] } as AlertPrefs, {
+const snapshot = atom({ plugin: 'leviro-agent-watcher', key: 'snapshot' } as const, null, { shape: 'snapshot-1' })
+const claude = atom({ plugin: 'leviro-agent-watcher', key: 'claude' } as const, [], { shape: 'claude-1' })
+const plan = atom({ plugin: 'leviro-agent-watcher', key: 'plan' } as const, [], { shape: 'plan-1' })
+const subagents = atom({ plugin: 'leviro-agent-watcher', key: 'subagents' } as const, [], { shape: 'subagents-1' })
+const isNotifying = atom({ plugin: 'leviro-agent-watcher', key: 'isNotifying' } as const, true)
+const alertPrefs = atom({ plugin: 'leviro-agent-watcher', key: 'alerts' } as const, { channels: [], off: [] } as AlertPrefs, {
   shape: 'alerts-1',
 })
 
@@ -141,8 +141,8 @@ async function desktop($: EngineInterface, title: string, body: string): Promise
   return $.ui.notify(body, { title }).then(() => true).catch(() => false)
 }
 
-// Phone alerts go to an ntfy topic URL (/agent-watch-phone) and to a Telegram
-// chat (/agent-watch-telegram). Both are kept in
+// Phone alerts go to an ntfy topic URL (/leviro-agent-watcher-phone) and to a Telegram
+// chat (/leviro-agent-watcher-telegram). Both are kept in
 // ~/.config/agent-watch/config.json so every session and copy reads them. The
 // tokens are not: they are the manifest's sensitive options `ntfyToken` and
 // `telegramBotToken`, which Claude Code keeps in its secure storage and hands
@@ -192,7 +192,7 @@ async function writeConfig($: EngineInterface, config: Config): Promise<void> {
 async function phone($: EngineInterface, url: string, title: string, body: string): Promise<number> {
   // An HTTP header carries ASCII only; the body takes any text.
   const headers: Record<string, string> = {
-    Title: title.replace(/[^\x20-\x7e]/g, '').trim() || 'agent-watch',
+    Title: title.replace(/[^\x20-\x7e]/g, '').trim() || 'leviro-agent-watcher',
     Tags: 'robot',
   }
   if (ntfyToken !== undefined) headers.Authorization = `Bearer ${ntfyToken}`
@@ -207,11 +207,11 @@ async function ntfySetup($: EngineInterface, server: string, topic: string): Pro
     `${server} asks for a login to publish to ${topic}.`,
     '1. On the server, give a user write access to the topic and create a token for it:',
     `   ntfy access <user> ${topic} rw`,
-    '   ntfy token add --label=agent-watch <user>',
+    '   ntfy token add --label=leviro-agent-watcher <user>',
     '2. Save the token (tk_...) in Claude Code secure storage. In your own terminal (not in a Claude prompt), run this and paste the token at the hidden prompt:',
     await saveLine($, 'ntfyToken', 'ntfy token'),
-    '   Or open /plugin, then agent-watch, then Configure.',
-    '3. Run /reload-plugins, then /agent-watch-phone test.',
+    '   Or open /plugin, then leviro-agent-watcher, then Configure.',
+    '3. Run /reload-plugins, then /leviro-agent-watcher-phone test.',
     `In the ntfy app, add the same user under Settings, Manage users, for ${server}, so the app can read the topic.`,
   ].join('\n')
 }
@@ -333,7 +333,7 @@ async function pluginId($: EngineInterface): Promise<string> {
   } catch {
     // No claude on PATH: name the GitHub install.
   }
-  return `${$.plugin.name}@claude-agent-watch`
+  return `${$.plugin.name}@leviro-agent-watcher`
 }
 
 async function telegramSetup($: EngineInterface): Promise<string> {
@@ -343,8 +343,8 @@ async function telegramSetup($: EngineInterface): Promise<string> {
     '1. In Telegram, open @BotFather, send /newbot, and copy the token it gives you.',
     '2. Save the token in Claude Code secure storage. In your own terminal (not in a Claude prompt), run this and paste the token at the hidden prompt:',
     save,
-    '   Or open /plugin, then agent-watch, then Configure.',
-    '3. Run /reload-plugins, send /start to your bot in Telegram, then run /agent-watch-telegram again.',
+    '   Or open /plugin, then leviro-agent-watcher, then Configure.',
+    '3. Run /reload-plugins, send /start to your bot in Telegram, then run /leviro-agent-watcher-telegram again.',
   ].join('\n')
 }
 
@@ -403,16 +403,16 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'agent-watch',
+      name: 'leviro-agent-watcher',
       description: 'Open the Agents pane: usage limits, running relays, the plan',
     })
     await $.command.register({
-      name: 'agent-watch-phone',
+      name: 'leviro-agent-watcher-phone',
       description: 'Send alerts to your phone through ntfy: no argument sets up a topic; off, test, a topic or a URL',
       argumentHint: '[off | test | <topic> | <url>]',
     })
     await $.command.register({
-      name: 'agent-watch-telegram',
+      name: 'leviro-agent-watcher-telegram',
       description: 'Send alerts to Telegram: no argument finds your chat; off, test, or a chat id',
       argumentHint: '[off | test | <chat id>]',
     })
@@ -428,14 +428,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'agent-watch' }, async $ => {
+  on('command.run', { command: 'leviro-agent-watcher' }, async $ => {
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     void collect($)
 
     return { text: opened.isPlaced ? 'Agents pane opened.' : `Agents pane waits: ${opened.reason}` }
   })
 
-  on('command.run', { command: 'agent-watch-phone' }, async ($, e) => {
+  on('command.run', { command: 'leviro-agent-watcher-phone' }, async ($, e) => {
     const arg = e.args.trim()
     const config = await readConfig($)
     if (arg === 'off') {
@@ -447,14 +447,14 @@ export const register: Register = (on, options) => {
     if (/^https?:\/\/\S+\/[\w-]{1,64}$/.test(arg)) url = arg
     else if (/^[\w-]{1,64}$/.test(arg) && arg !== 'test') url = `https://ntfy.sh/${arg}`
     else if (arg !== '' && arg !== 'test') return { text: `Not an ntfy topic name or topic URL: ${arg}` }
-    url ??= `https://ntfy.sh/agent-watch-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
+    url ??= `https://ntfy.sh/leviro-agent-watcher-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
     const chosen = url
     await writeConfig($, { ...config, ntfyUrl: chosen })
     await refreshAlerts($)
     const status = await phone(
       $,
       chosen,
-      'agent-watch',
+      'leviro-agent-watcher',
       'Phone alerts work: questions, finished turns, relays and limits arrive here.',
     )
     const cut = chosen.lastIndexOf('/')
@@ -478,12 +478,12 @@ export const register: Register = (on, options) => {
         `Phone alerts go to ${chosen}: ${outcome}.`,
         `On your phone, install the ntfy app, tap +, and subscribe to the topic ${chosen.slice(cut + 1)}${server === 'https://ntfy.sh' ? '' : ` on the server ${server}`}.`,
         'Anyone who knows the topic name can read these alerts, so keep it private.',
-        'Run /agent-watch-phone off to stop them.',
+        'Run /leviro-agent-watcher-phone off to stop them.',
       ].join('\n'),
     }
   })
 
-  on('command.run', { command: 'agent-watch-telegram' }, async ($, e) => {
+  on('command.run', { command: 'leviro-agent-watcher-telegram' }, async ($, e) => {
     const arg = e.args.trim()
     const config = await readConfig($)
     if (arg === 'off') {
@@ -510,7 +510,7 @@ export const register: Register = (on, options) => {
       const chat = chats.reverse().find(one => one.type === 'private') ?? chats[0]
       if (chat === undefined) {
         return {
-          text: `No message to ${bot} found yet. Send /start to ${bot} in Telegram, then run /agent-watch-telegram again.`,
+          text: `No message to ${bot} found yet. Send /start to ${bot} in Telegram, then run /leviro-agent-watcher-telegram again.`,
         }
       }
       chatId = String(chat.id)
@@ -520,13 +520,13 @@ export const register: Register = (on, options) => {
     const isSent = await telegram(
       $,
       chatId,
-      'agent-watch',
+      'leviro-agent-watcher',
       'Telegram alerts work: questions, finished turns, relays and limits arrive here.',
     )
     return {
       text: [
         `Telegram alerts go to chat ${chatId} through ${bot}: ${isSent ? 'a test message was sent' : 'the test message failed to send'}.`,
-        'Run /agent-watch-telegram off to stop them.',
+        'Run /leviro-agent-watcher-telegram off to stop them.',
       ].join('\n'),
     }
   })

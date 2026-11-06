@@ -6,13 +6,13 @@ import type { Snapshot } from '../types'
 const NOW = 1_793_562_512_000
 const HOUR = 3_600_000
 const MINUTE = 60_000
-const NTFY = 'https://ntfy.sh/agent-watch-test'
+const NTFY = 'https://ntfy.sh/leviro-agent-watcher-test'
 const TOKEN = '123456:TEST-token-never-shown'
 
 const PANE = {
-  plugin: 'agent-watch',
+  plugin: 'leviro-agent-watcher',
   component: 'Pane',
-  requestId: 'agent-watch',
+  requestId: 'leviro-agent-watcher',
   props: {
     title: 'Agents',
     isFocused: false,
@@ -163,7 +163,7 @@ function host(on: On, outputs: Snapshot[], { os = 'linux', ntfyLocked = false, n
       return ok()
     }
     if (e.argv[0] === 'claude') {
-      return ok(JSON.stringify([{ id: 'agent-watch@test-market', readFromFolder: '/elsewhere' }]))
+      return ok(JSON.stringify([{ id: 'leviro-agent-watcher@test-market', readFromFolder: '/elsewhere' }]))
     }
     collects.push(e.argv[e.argv.indexOf('--claude') + 1] ?? '')
     const next = outputs.length > 1 ? outputs.shift() : outputs[0]
@@ -311,19 +311,19 @@ test('a dispatch to an agent past 90% is refused with the agents that have room'
   expect(other.deny).toBeUndefined()
 })
 
-test('/agent-watch-phone sets up a private topic, sends a test, and turns off', async ($, on) => {
+test('/leviro-agent-watcher-phone sets up a private topic, sends a test, and turns off', async ($, on) => {
   const { clock, phones, writes } = host(on, [snapshot()])
   await $.session.start(SESSION)
   await clock.settle()
 
-  const setUp = await $.command.run(typed('agent-watch-phone', ''))
+  const setUp = await $.command.run(typed('leviro-agent-watcher-phone', ''))
   expect(setUp.text).toContain('a test alert was sent')
   expect(writes[0]).toMatch(
-    /^\/home\/me\/\.config\/agent-watch\/config\.json .*https:\/\/ntfy\.sh\/agent-watch-[0-9a-f]{20}/s,
+    /^\/home\/me\/\.config\/agent-watch\/config\.json .*https:\/\/ntfy\.sh\/leviro-agent-watcher-[0-9a-f]{20}/s,
   )
-  expect(phones[0]).toMatch(/^https:\/\/ntfy\.sh\/agent-watch-[0-9a-f]{20} \| agent-watch \| Phone alerts work/)
+  expect(phones[0]).toMatch(/^https:\/\/ntfy\.sh\/leviro-agent-watcher-[0-9a-f]{20} \| leviro-agent-watcher \| Phone alerts work/)
 
-  const off = await $.command.run(typed('agent-watch-phone', 'off'))
+  const off = await $.command.run(typed('leviro-agent-watcher-phone', 'off'))
   expect(off.text).toBe('Phone alerts are off.')
   expect(writes[1]).not.toContain('ntfy')
 })
@@ -356,26 +356,26 @@ test('the alerts button turns desktop and phone alerts off', async ($, on) => {
   await ui.unmount()
 })
 
-test('/agent-watch-telegram explains the secure setup when no bot token is saved', async ($, on) => {
+test('/leviro-agent-watcher-telegram explains the secure setup when no bot token is saved', async ($, on) => {
   const { clock, telegrams } = host(on, [snapshot()])
   await $.session.start(SESSION)
   await clock.settle()
 
-  const answer = await $.command.run(typed('agent-watch-telegram', ''))
+  const answer = await $.command.run(typed('leviro-agent-watcher-telegram', ''))
   expect(answer.text).toContain('@BotFather')
-  expect(answer.text).toContain('claude plugin configure agent-watch@test-market --values-stdin')
+  expect(answer.text).toContain('claude plugin configure leviro-agent-watcher@test-market --values-stdin')
   expect(telegrams).toHaveLength(0)
 })
 
 test(
-  '/agent-watch-telegram finds the chat, sends a test, and never shows the token',
+  '/leviro-agent-watcher-telegram finds the chat, sends a test, and never shows the token',
   { options: { telegramBotToken: TOKEN } },
   async ($, on) => {
     const { clock, writes, telegrams } = host(on, [snapshot()])
     await $.session.start(SESSION)
     await clock.settle()
 
-    const answer = await $.command.run(typed('agent-watch-telegram', ''))
+    const answer = await $.command.run(typed('leviro-agent-watcher-telegram', ''))
     expect(answer.text).toContain('Telegram alerts go to chat 42 through @watch_bot: a test message was sent.')
     expect(answer.text).not.toContain(TOKEN)
     expect(writes.join('\n')).not.toContain(TOKEN)
@@ -386,7 +386,7 @@ test(
     expect((await ui.find({ key: 'alert-telegram' }))?.text).toContain('telegram')
     await ui.unmount()
 
-    const off = await $.command.run(typed('agent-watch-telegram', 'off'))
+    const off = await $.command.run(typed('leviro-agent-watcher-telegram', 'off'))
     expect(off.text).toContain('Telegram alerts are off.')
     expect(writes[1]).not.toContain('telegramChatId')
   },
@@ -471,13 +471,13 @@ test('a server that asks for a login gets the token steps, and the saved token g
   await $.session.start(SESSION)
   await clock.settle()
 
-  const refused = await $.command.run(typed('agent-watch-phone', own))
+  const refused = await $.command.run(typed('leviro-agent-watcher-phone', own))
   expect(refused.text).toContain('the test alert was refused (HTTP 403)')
   expect(refused.text).toContain('ntfy access <user> alerts rw')
-  expect(refused.text).toContain('ntfy token add --label=agent-watch <user>')
+  expect(refused.text).toContain('ntfy token add --label=leviro-agent-watcher <user>')
   expect(refused.text).toContain(`printf '{"ntfyToken":"%s"}'`)
   expect(phones[0]).toBe(
-    `${own} | agent-watch | Phone alerts work: questions, finished turns, relays and limits arrive here.`,
+    `${own} | leviro-agent-watcher | Phone alerts work: questions, finished turns, relays and limits arrive here.`,
   )
 })
 
@@ -490,7 +490,7 @@ test(
     await $.session.start(SESSION)
     await clock.settle()
 
-    const sent = await $.command.run(typed('agent-watch-phone', 'test'))
+    const sent = await $.command.run(typed('leviro-agent-watcher-phone', 'test'))
     expect(sent.text).toContain(`Phone alerts go to ${own}: a test alert was sent.`)
     expect(sent.text).not.toContain('tk_test')
     expect(writes.join('\n')).not.toContain('tk_test')

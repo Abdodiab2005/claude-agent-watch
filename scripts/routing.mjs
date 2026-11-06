@@ -40,7 +40,7 @@ export function routeCheck(command, snapshot, now = Date.now()) {
     .map(one => `${one.name} (${Math.round(one.top)}% used)`)
   const reset = worst.resetsAt === undefined ? '' : `, resets in ${span(worst.resetsAt - now)}`
   return [
-    `agent-watch stopped this dispatch: ${row.name} ${worst.label} limit is at ${Math.round(worst.percentUsed)}%${reset}.`,
+    `leviro-agent-watcher stopped this dispatch: ${row.name} ${worst.label} limit is at ${Math.round(worst.percentUsed)}%${reset}.`,
     room.length > 0
       ? `Agents with room: ${room.join(', ')}. Dispatch to one of them, or ask the user.`
       : 'No other agent has room; ask the user.',

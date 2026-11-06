@@ -1,8 +1,8 @@
-# agent-watch
+# leviro-agent-watcher
 
 A local plugin for **Claude Code and Codex**, for people who orchestrate work
 and hand implementation to other coding agents through the `*-delegate`
-skills. Claude Code gets a pane beside the chat. Codex gets an `agent-watch`
+skills. Claude Code gets a pane beside the chat. Codex gets a `leviro-agent-watcher`
 skill and a live monitor you can run in an adjacent terminal. They show:
 
 - **Limits**: the 5-hour and weekly usage of each agent, with a bar, the time
@@ -44,7 +44,7 @@ dispatch anyway.
 At the prompt of a terminal Claude Code session:
 
 ```
-/plugin install agent-watch --marketplace Abdodiab2005/claude-agent-watch
+/plugin install leviro-agent-watcher --marketplace Abdodiab2005/leviro-agent-watcher
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user scope loads it in
@@ -53,15 +53,15 @@ every session).
 From a shell:
 
 ```
-claude plugin install agent-watch --marketplace Abdodiab2005/claude-agent-watch
+claude plugin install leviro-agent-watcher --marketplace Abdodiab2005/leviro-agent-watcher
 ```
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt
-box, then Plugins, Add marketplace with `Abdodiab2005/claude-agent-watch`, then
+box, then Plugins, Add marketplace with `Abdodiab2005/leviro-agent-watcher`, then
 Add plugin.
 
 The pane opens by itself in a fullscreen terminal 144 columns wide or more.
-Anywhere else, run `/agent-watch`.
+Anywhere else, run `/leviro-agent-watcher`.
 
 ### Codex
 
@@ -69,16 +69,16 @@ Use a Codex build with plugins and lifecycle hooks (installation verified with
 Codex CLI 0.166.0):
 
 ```bash
-codex plugin marketplace add Abdodiab2005/claude-agent-watch
-codex plugin add agent-watch@claude-agent-watch
+codex plugin marketplace add Abdodiab2005/leviro-agent-watcher
+codex plugin add leviro-agent-watcher@leviro-agent-watcher
 ```
 
-Start a new session, open `/hooks`, and review/trust Agent Watch's hooks.
+Start a new session, open `/hooks`, and review/trust Leviro Agent Watcher's hooks.
 Installing a plugin does not trust its hooks automatically. The hooks notify
 you about approvals; they never approve or deny a permission request.
 
-Invoke `$agent-watch` for a status reading, or ask it for the live monitor
-command. The monitor is `node /path/to/agent-watch/scripts/codex.mjs watch`:
+Invoke `$leviro-agent-watcher` for a status reading, or ask it for the live monitor
+command. The monitor is `node /path/to/leviro-agent-watcher/scripts/codex.mjs watch`:
 run it in another terminal and stop it with Ctrl-C. `status` prints one
 reading. Add `--session <Codex thread id>` to either for a single session;
 without it, all locally tracked Codex sessions appear.
@@ -93,7 +93,21 @@ requires trusted hooks; it does not parse conversation transcripts.
 
 Use the same repository/marketplace in both hosts. The Codex manifest selects
 `hooks/codex.json` and `codex-skills/`; Claude continues to load
-`hooks/register.tsx`. Its commands and secure-storage settings stay in place.
+`hooks/register.tsx` with the same pane and secure-storage API.
+
+#### Upgrading from agent-watch
+
+The public repository, marketplace, plugin and commands are now named
+`leviro-agent-watcher`. Existing preferences and delivery receipts stay in the
+legacy `~/.config/agent-watch/` and `~/.cache/agent-watch/` directories, so
+destinations and per-channel switches carry over without moving your data.
+The existing `AGENT_WATCH_*` environment variable names also continue to work.
+
+Disable the old plugin before enabling the renamed one to avoid duplicate
+session alerts. Claude secure-storage options belong to the old plugin id;
+keep that installation until you have configured any needed phone tokens on
+the renamed plugin through `/plugin`. The rename does not read, export, or
+delete its saved credentials. Codex users review the renamed hooks in `/hooks`.
 
 #### Codex phone alerts
 
@@ -131,10 +145,10 @@ event; successful channels share delivery receipts across Claude and Codex.
 Ask the skill to switch alerts, or run:
 
 ```bash
-node /path/to/agent-watch/scripts/codex.mjs alerts off
-node /path/to/agent-watch/scripts/codex.mjs alerts on
-node /path/to/agent-watch/scripts/codex.mjs alerts off done
-node /path/to/agent-watch/scripts/codex.mjs alerts on ntfy
+node /path/to/leviro-agent-watcher/scripts/codex.mjs alerts off
+node /path/to/leviro-agent-watcher/scripts/codex.mjs alerts on
+node /path/to/leviro-agent-watcher/scripts/codex.mjs alerts off done
+node /path/to/leviro-agent-watcher/scripts/codex.mjs alerts on ntfy
 ```
 
 With no target, `on`/`off` changes all four alert kinds. Individual targets are
@@ -182,11 +196,11 @@ ntfy and Telegram can be used one at a time or together.
 ### ntfy
 
 ```
-/agent-watch-phone            set up a new random topic and send a test alert
-/agent-watch-phone test       send a test alert
-/agent-watch-phone <topic>    use a topic on ntfy.sh
-/agent-watch-phone <url>      use a topic on your own ntfy server
-/agent-watch-phone off        stop phone alerts
+/leviro-agent-watcher-phone            set up a new random topic and send a test alert
+/leviro-agent-watcher-phone test       send a test alert
+/leviro-agent-watcher-phone <topic>    use a topic on ntfy.sh
+/leviro-agent-watcher-phone <url>      use a topic on your own ntfy server
+/leviro-agent-watcher-phone off        stop phone alerts
 ```
 
 Then install the ntfy app on your phone and subscribe to the topic. Anyone who
@@ -194,17 +208,17 @@ knows the topic name can read the alerts, so keep it private.
 
 A self-hosted server that asks for a login to publish (`auth-default-access:
 deny-all`, or a locked topic) answers the test alert with HTTP 403, and
-`/agent-watch-phone` then prints these steps:
+`/leviro-agent-watcher-phone` then prints these steps:
 
 1. On the server, give a user write access and create a token:
-   `ntfy access <user> <topic> rw`, then `ntfy token add --label=agent-watch <user>`.
+   `ntfy access <user> <topic> rw`, then `ntfy token add --label=leviro-agent-watcher <user>`.
 2. Save the token in Claude Code's secure storage, from your own terminal:
 
    ```
-   read -rs T && printf '{"ntfyToken":"%s"}' "$T" | claude plugin configure agent-watch@claude-agent-watch --values-stdin; unset T
+   read -rs T && printf '{"ntfyToken":"%s"}' "$T" | claude plugin configure leviro-agent-watcher@leviro-agent-watcher --values-stdin; unset T
    ```
 
-3. Run `/reload-plugins`, then `/agent-watch-phone test`.
+3. Run `/reload-plugins`, then `/leviro-agent-watcher-phone test`.
 
 The token is the sensitive option `ntfyToken`, kept like the Telegram token and
 sent only to the ntfy server set up, as `Authorization: Bearer`. In the ntfy
@@ -223,29 +237,29 @@ setting is kept in `~/.config/agent-watch/config.json`.
    a Claude prompt), run this and paste the token at the silent prompt:
 
    ```
-   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure agent-watch@claude-agent-watch --values-stdin; unset T
+   read -rs T && printf '{"telegramBotToken":"%s"}' "$T" | claude plugin configure leviro-agent-watcher@leviro-agent-watcher --values-stdin; unset T
    ```
 
    In Windows PowerShell:
 
    ```
-   $s = Read-Host -AsSecureString 'Token'; $t = [Net.NetworkCredential]::new('', $s).Password; '{"telegramBotToken":"' + $t + '"}' | claude plugin configure agent-watch@claude-agent-watch --values-stdin; Remove-Variable s, t
+   $s = Read-Host -AsSecureString 'Token'; $t = [Net.NetworkCredential]::new('', $s).Password; '{"telegramBotToken":"' + $t + '"}' | claude plugin configure leviro-agent-watcher@leviro-agent-watcher --values-stdin; Remove-Variable s, t
    ```
 
-   `agent-watch@claude-agent-watch` is the id of an install from GitHub;
-   `claude plugin list` shows yours, and `/agent-watch-telegram` prints this
+   `leviro-agent-watcher@leviro-agent-watcher` is the id of an install from GitHub;
+   `claude plugin list` shows yours, and `/leviro-agent-watcher-telegram` prints this
    line with it filled in.
 
-   Or open `/plugin`, then agent-watch, then Configure.
+   Or open `/plugin`, then leviro-agent-watcher, then Configure.
 3. Run `/reload-plugins`, send `/start` to your bot, then run
-   `/agent-watch-telegram`. It finds your chat, saves its id, and sends a test
+   `/leviro-agent-watcher-telegram`. It finds your chat, saves its id, and sends a test
    message.
 
 ```
-/agent-watch-telegram             find your chat and send a test message
-/agent-watch-telegram test        send a test message
-/agent-watch-telegram <chat id>   send to this chat (a group's id starts with -)
-/agent-watch-telegram off         stop Telegram alerts
+/leviro-agent-watcher-telegram             find your chat and send a test message
+/leviro-agent-watcher-telegram test        send a test message
+/leviro-agent-watcher-telegram <chat id>   send to this chat (a group's id starts with -)
+/leviro-agent-watcher-telegram off         stop Telegram alerts
 ```
 
 The token is the manifest's `sensitive` option `telegramBotToken`: Claude Code

@@ -74,7 +74,7 @@ export type SubagentRun = { id: string; description: string; type: string; statu
 
 declare module 'claude-code' {
   interface PluginState {
-    'agent-watch': {
+    'leviro-agent-watcher': {
       snapshot: Shaped<Snapshot | null>
       claude: Shaped<LimitWindow[]>
       plan: Shaped<PlanItem[]>

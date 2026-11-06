@@ -137,8 +137,8 @@ function duration(ms) {
 }
 
 export function render(snapshot, active = [], now = Date.now()) {
-  if (!snapshot) return 'Agents: collecting the first reading; try again shortly.\n'
-  const lines = [`Agents · ${new Date(snapshot.at).toISOString()}${now - snapshot.at > 60_000 ? ' (stale)' : ''}`, '', 'Limits']
+  if (!snapshot) return 'Leviro Agent Watcher: collecting the first reading; try again shortly.\n'
+  const lines = [`Leviro Agent Watcher · ${new Date(snapshot.at).toISOString()}${now - snapshot.at > 60_000 ? ' (stale)' : ''}`, '', 'Limits']
   const rows = [...(snapshot.claude ? [snapshot.claude] : []), ...snapshot.agents]
   for (const row of rows) {
     if (!row.windows.length) lines.push(`  ${row.name}: ${text(row.note) || 'no current reading'}`)
@@ -180,7 +180,7 @@ async function main() {
   const [mode = 'status', ...args] = process.argv.slice(2)
   if (mode === 'hook') {
     try { process.stdout.write(JSON.stringify(await handleHook(await input()))) }
-    catch { process.stderr.write('agent-watch: hook unavailable; normal Codex flow continues.\n'); process.stdout.write('{}') }
+    catch { process.stderr.write('leviro-agent-watcher: hook unavailable; normal Codex flow continues.\n'); process.stdout.write('{}') }
   } else if (mode === 'poll') {
     await input()
     await poll()
@@ -209,7 +209,7 @@ async function main() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(() => {
     // HTTP/subprocess errors can contain credentials; never echo them.
-    process.stderr.write('agent-watch: unable to run. Usage: codex.mjs status|watch [--session ID], alerts on|off [channel|kind], hook, poll\n')
+    process.stderr.write('leviro-agent-watcher: unable to run. Usage: codex.mjs status|watch [--session ID], alerts on|off [channel|kind], hook, poll\n')
     process.exitCode = 1
   })
 }
