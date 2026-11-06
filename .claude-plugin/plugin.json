@@ -1,6 +1,6 @@
 {
   "name": "agent-watch",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Side pane with the 5-hour and weekly limits of Claude, Codex, Antigravity and Grok, running delegate relays, the plan, and desktop, ntfy and Telegram alerts",
   "author": {
     "name": "Abdodiab2005"

@@ -1,5 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
+import { routeCheck as checkRoute } from '../scripts/routing.mjs'
 
 import type {
   AgentRow,
@@ -22,7 +23,6 @@ const WARN_PERCENT = 90
 // The Claude desktop app's icon, found by name in the icon theme where it is installed.
 const ICON = 'claude-desktop'
 const BUSY: readonly string[] = ['pending', 'running', 'waiting']
-const RELAY = /\b([a-z]+)-delegate[\\/]scripts[\\/]relay\.mjs\b/
 const STALL_MS = 20 * 60_000
 
 // Each shape tag declines what an earlier version of the mod stored.
@@ -348,53 +348,10 @@ async function telegramSetup($: EngineInterface): Promise<string> {
   ].join('\n')
 }
 
-// The windows a relay of this agent spends: an agy model draws on its group.
-function spentBy(row: AgentRow, model?: string): LimitWindow[] {
-  if (row.id !== 'agy') return row.windows
-  const group =
-    model === undefined
-      ? undefined
-      : /claude|gpt/i.test(model)
-        ? 'Claude/GPT'
-        : /argon/i.test(model)
-          ? 'Argon'
-          : /gemini/i.test(model)
-            ? 'Gemini'
-            : undefined
-  return row.windows.filter(window =>
-    group === undefined ? !window.label.startsWith('Argon') : window.label.startsWith(`${group} `),
-  )
-}
-
 // A relay dispatch to an agent past WARN_PERCENT is refused with the agents
 // that have room; AGENT_WATCH_ALLOW=1 in the command lets it through.
 async function routeCheck($: EngineInterface, command: string): Promise<string | undefined> {
-  const match = RELAY.exec(command)
-  if (match === null || /\bAGENT_WATCH_ALLOW=1\b/.test(command) || /\s--help\b/.test(command)) return undefined
-  const snap = await read($, snapshot)
-  const now = await $.clock.now()
-  if (snap === null || now - snap.at > 10 * 60_000) return undefined
-  const row = snap.agents.find(one => one.id === match[1])
-  if (row === undefined) return undefined
-  const model = /--model\s+(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(command)
-  const full = spentBy(row, model?.[1] ?? model?.[2] ?? model?.[3]).filter(one => one.percentUsed >= WARN_PERCENT)
-  const worst = full.sort((a, b) => b.percentUsed - a.percentUsed)[0]
-  if (worst === undefined) return undefined
-
-  const room = snap.agents
-    .filter(one => one.id !== row.id)
-    .map(one => ({ name: one.name, top: Math.max(-1, ...spentBy(one).map(window => window.percentUsed)) }))
-    .filter(one => one.top >= 0 && one.top < WARN_PERCENT)
-    .sort((a, b) => a.top - b.top)
-    .map(one => `${one.name} (${Math.round(one.top)}% used)`)
-  const reset = worst.resetsAt === undefined ? '' : `, resets in ${span(worst.resetsAt - now)}`
-  return [
-    `agent-watch stopped this dispatch: ${row.name} ${worst.label} limit is at ${Math.round(worst.percentUsed)}%${reset}.`,
-    room.length > 0
-      ? `Agents with room: ${room.join(', ')}. Dispatch to one of them, or ask the user.`
-      : 'No other agent has room; ask the user.',
-    `To dispatch to ${row.name} anyway, prefix the command with AGENT_WATCH_ALLOW=1.`,
-  ].join(' ')
+  return checkRoute(command, await read($, snapshot), await $.clock.now())
 }
 
 async function collect($: EngineInterface): Promise<void> {

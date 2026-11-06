@@ -49,6 +49,8 @@ export type AlertPrefs = { channels: string[]; off: string[] }
 /** What scripts/collect.mjs prints; alerts are delivered per channel with receipts. */
 export type Snapshot = {
   at: number
+  /** Claude's last engine reading, shared locally with the Codex view for 10m. */
+  claude?: AgentRow
   agents: AgentRow[]
   runs: RelayRun[]
   /** Relays that ended in the last hour, newest first, 3 at most. */

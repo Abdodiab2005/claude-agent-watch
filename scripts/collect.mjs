@@ -67,7 +67,7 @@ function windowLabel(minutes) {
 // primary is the 5-hour window, secondary the weekly one.
 function codex() {
   const row = { id: 'codex', name: 'Codex', windows: [] }
-  const root = join(HOME, '.codex', 'sessions')
+  const root = join(process.env.CODEX_HOME || join(HOME, '.codex'), 'sessions')
   if (!existsSync(root)) return { ...row, note: 'no ~/.codex/sessions' }
 
   const files = []
@@ -322,14 +322,14 @@ function readJson(path, fallback) {
 }
 
 function writeJson(path, value) {
-  mkdirSync(CACHE, { recursive: true })
+  mkdirSync(CACHE, { recursive: true, mode: 0o700 })
   const draft = `${path}.${process.pid}`
-  writeFileSync(draft, JSON.stringify(value))
+  writeFileSync(draft, JSON.stringify(value), { mode: 0o600 })
   try {
     renameSync(draft, path)
   } catch {
     // Windows refuses to replace a file another process has open: write in place.
-    writeFileSync(path, JSON.stringify(value))
+    writeFileSync(path, JSON.stringify(value), { mode: 0o600 })
     rmSync(draft, { force: true })
   }
 }
@@ -433,7 +433,14 @@ function limitAlerts(rows, outAts) {
 function claudeWindows() {
   const at = process.argv.indexOf('--claude')
   try {
-    return at < 0 ? [] : JSON.parse(process.argv[at + 1] ?? '[]')
+    if (at >= 0) {
+      const windows = JSON.parse(process.argv[at + 1] ?? '[]')
+      try { writeJson(join(CACHE, 'claude-usage.json'), { at: NOW, windows }) } catch { /* cache is optional */ }
+      return windows
+    }
+    const saved = readJson(join(CACHE, 'claude-usage.json'), {})
+    return NOW - saved.at < 10 * 60_000 && Array.isArray(saved.windows)
+      ? saved.windows.filter(window => window.resetsAt === undefined || window.resetsAt > NOW) : []
   } catch {
     return []
   }
@@ -455,6 +462,7 @@ const agents = [
 
 const alerts = []
 let outAts = {}
+const claude = { id: 'claude', name: 'Claude', windows: claudeWindows() }
 try {
   pruneClaims()
   if (error === undefined) endedRuns(running)
@@ -479,11 +487,13 @@ try {
       })
     }
   }
-  const rows = [{ id: 'claude', name: 'Claude', windows: claudeWindows() }, ...agents]
+  const rows = [claude, ...agents]
   outAts = forecasts(rows)
   alerts.push(...limitAlerts(rows, outAts))
 } catch (failure) {
   error = `alerts failed: ${String(failure?.message ?? failure).slice(0, 80)}`
 }
 const finished = readJson(FINISHED, []).filter(done => NOW - done.endedAt < HOUR).slice(0, 3)
-process.stdout.write(JSON.stringify({ at: NOW, agents, runs: running, finished, forecasts: outAts, alerts, error }))
+const snapshot = { at: NOW, claude, agents, runs: running, finished, forecasts: outAts, alerts, error }
+try { writeJson(join(CACHE, 'snapshot.json'), snapshot) } catch { /* a read-only cache must not hide the reading */ }
+process.stdout.write(JSON.stringify(snapshot))

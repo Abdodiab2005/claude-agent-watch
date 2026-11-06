@@ -1,0 +1,15 @@
+{
+  "name": "agent-watch",
+  "version": "0.5.0",
+  "description": "Usage limits, delegate relays, plans, subagents and alerts for Codex and Claude Code",
+  "author": { "name": "Abdodiab2005" },
+  "homepage": "https://github.com/Abdodiab2005/claude-agent-watch",
+  "repository": "https://github.com/Abdodiab2005/claude-agent-watch",
+  "license": "MIT",
+  "skills": "./codex-skills/",
+  "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "Agent Watch",
+    "shortDescription": "Agent usage, running work and alerts"
+  }
+}

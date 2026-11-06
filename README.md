@@ -1,8 +1,9 @@
 # agent-watch
 
-A Claude Code mod for people who run Claude Code as an orchestrator and hand
-implementation work to other coding agents (Codex, Antigravity, Grok) through
-the `*-delegate` skills. It keeps a pane beside the chat that shows:
+A local plugin for **Claude Code and Codex**, for people who orchestrate work
+and hand implementation to other coding agents through the `*-delegate`
+skills. Claude Code gets a pane beside the chat. Codex gets an `agent-watch`
+skill and a live monitor you can run in an adjacent terminal. They show:
 
 - **Limits**: the 5-hour and weekly usage of each agent, with a bar, the time
   until the window resets, and a forecast (`⚠ out 2d7h`) when the average
@@ -13,13 +14,14 @@ the `*-delegate` skills. It keeps a pane beside the chat that shows:
   session), how long it has run, and `idle 25m` when it has changed no file for
   a while; the session's own subagents; relays that finished in the last hour,
   with their status and the number of files they touched.
-- **Plan**: the session's todo or task list, with the current step in bold.
+- **Plan**: Claude's todo/task list or Codex's `update_plan`, with the current
+  step marked. Codex's view also shows its native subagents from lifecycle hooks.
 
 It also sends alerts, to the desktop and optionally to your phone through
 [ntfy](https://ntfy.sh), a Telegram bot, or both, when:
 
-- Claude asks you a question or needs a permission;
-- Claude finishes a turn that took 15 seconds or more (the notification does not include Claude's answer);
+- Claude or Codex asks you a question or needs a permission;
+- Claude or Codex finishes a turn that took 15 seconds or more (the notification does not include the answer);
 - a relay finishes, or seems stuck (no file change for 20 minutes);
 - any limit passes 90%, or is forecast to run out before it resets.
 
@@ -30,12 +32,14 @@ channels that succeeded. Delivery receipts and short-lived leases live in
 `~/.cache/agent-watch/deliveries/`. A crash between a successful network
 send and writing its receipt can rarely produce a duplicate.
 
-Finally, it routes delegated work by limits: when Claude starts a relay for an
+Finally, it routes delegated work by limits: when either host starts a relay for an
 agent whose limit is past 90%, the call is refused with a message naming the
 agents that still have room. Prefix the command with `AGENT_WATCH_ALLOW=1` to
 dispatch anyway.
 
 ## Install
+
+### Claude Code
 
 At the prompt of a terminal Claude Code session:
 
@@ -59,6 +63,84 @@ Add plugin.
 The pane opens by itself in a fullscreen terminal 144 columns wide or more.
 Anywhere else, run `/agent-watch`.
 
+### Codex
+
+Use a Codex build with plugins and lifecycle hooks (installation verified with
+Codex CLI 0.166.0):
+
+```bash
+codex plugin marketplace add Abdodiab2005/claude-agent-watch
+codex plugin add agent-watch@claude-agent-watch
+```
+
+Start a new session, open `/hooks`, and review/trust Agent Watch's hooks.
+Installing a plugin does not trust its hooks automatically. The hooks notify
+you about approvals; they never approve or deny a permission request.
+
+Invoke `$agent-watch` for a status reading, or ask it for the live monitor
+command. The monitor is `node /path/to/agent-watch/scripts/codex.mjs watch`:
+run it in another terminal and stop it with Ctrl-C. `status` prints one
+reading. Add `--session <Codex thread id>` to either for a single session;
+without it, all locally tracked Codex sessions appear.
+
+Codex does not expose Claude's TSX pane API. Its view is text, with a separate
+terminal for continuous monitoring. Hooks refresh the shared collector after
+tools and at session/turn boundaries, at most once every 30 seconds. The live
+monitor also polls while Codex is idle. No background daemon is installed.
+Claude's own usage is visible in Codex while a Claude session publishes it;
+that cached reading expires after 10 minutes. Codex's plan/subagent view
+requires trusted hooks; it does not parse conversation transcripts.
+
+Use the same repository/marketplace in both hosts. The Codex manifest selects
+`hooks/codex.json` and `codex-skills/`; Claude continues to load
+`hooks/register.tsx`. Its commands and secure-storage settings stay in place.
+
+#### Codex phone alerts
+
+Both hosts read `~/.config/agent-watch/config.json`. If Claude already set up
+ntfy or Telegram, those destinations and per-channel/kind switches are reused.
+For a Codex-only installation, create that file with the channels you want:
+
+```json
+{
+  "ntfyUrl": "https://ntfy.sh/your-private-topic",
+  "telegramChatId": "123456789",
+  "off": []
+}
+```
+
+Omit unused channels. Choose an unguessable ntfy topic; anyone who knows an
+open topic can read its alerts. Send `/start` to your Telegram bot first and
+use your own chat id. Codex does not read Claude's secure storage. If needed,
+provide `AGENT_WATCH_NTFY_TOKEN` and/or `AGENT_WATCH_TELEGRAM_BOT_TOKEN` in the
+environment of the Codex process and the live monitor. For example, in your
+own Bash terminal, this keeps the token out of chat, output and shell history:
+
+```bash
+read -rs -p 'Telegram token: ' AGENT_WATCH_TELEGRAM_BOT_TOKEN
+export AGENT_WATCH_TELEGRAM_BOT_TOKEN
+codex
+unset AGENT_WATCH_TELEGRAM_BOT_TOKEN
+```
+
+Use the same pattern for `AGENT_WATCH_NTFY_TOKEN`. Tokens are held in memory,
+sent only to the configured service, and never written to plugin state.
+HTTP redirects are refused. A disabled or failed channel does not consume an
+event; successful channels share delivery receipts across Claude and Codex.
+
+Ask the skill to switch alerts, or run:
+
+```bash
+node /path/to/agent-watch/scripts/codex.mjs alerts off
+node /path/to/agent-watch/scripts/codex.mjs alerts on
+node /path/to/agent-watch/scripts/codex.mjs alerts off done
+node /path/to/agent-watch/scripts/codex.mjs alerts on ntfy
+```
+
+With no target, `on`/`off` changes all four alert kinds. Individual targets are
+`desktop`, `ntfy`, `telegram`, `ask`, `done`, `relay`, and `limit`. These shared
+switches also apply in Claude's pane; its main on/off button is session-local.
+
 ## Requirements
 
 - Node.js 22.5 or newer on `PATH` (the collector script runs with it).
@@ -79,7 +161,7 @@ Anywhere else, run `/agent-watch`.
 
 | Agent | Source |
 | --- | --- |
-| Claude | Claude Code's own rate-limit readings for the session (subscription accounts) |
+| Claude | Claude Code's own rate-limit readings for the session (subscription accounts); shared locally with Codex for up to 10 minutes |
 | Codex | the `rate_limits` the Codex CLI writes into `~/.codex/sessions/**/rollout-*.jsonl` |
 | Antigravity | `agy -p "/usage" --output-format json`, cached for 5 minutes (1 minute while an agy relay runs) |
 | Grok | the billing endpoint the Grok CLI itself calls, `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, cached for 5 minutes |
@@ -191,20 +273,34 @@ session follows a change at once.
 
 ## Files it writes
 
-Everything goes under `~/.cache/agent-watch/`: the cached Antigravity and Grok
+Preferences go in `~/.config/agent-watch/config.json`. Cache/state goes under
+`~/.cache/agent-watch/` (`$XDG_CACHE_HOME/agent-watch` when set): the cached Antigravity and Grok
 readings, the relays seen last, the relays that finished, and the claim
 files that keep an alert from being sent twice. Claim files older than 8 days are deleted.
+The latest collector snapshot and Claude's recent limit windows are shared
+there too. Codex stores session directory names as hashes, plus local cwd,
+turn-start times, up to 100 plan steps of 300 characters, and subagent
+type/timing. Session end removes that session's state; session start prunes
+orphaned state older than 8 days. Prompts, assistant answers, approval reasons,
+tool commands/results and transcript paths are not stored by the adapter.
 
 ## Development
 
 ```
 claude plugin validate .
 claude plugin test .
+node --test tests/*.test.mjs
 node scripts/platform.check.mjs
 ```
 
 The last one checks the process parsers against Linux, macOS and Windows
 output.
+The Node tests exercise Codex's real hook entry point with isolated state and
+fake collector/notification transports; they make no billing, model or phone
+requests. Claude's suite exercises the existing pane and commands.
+
+Codex plugin and hook format: [plugin packaging](https://developers.openai.com/plugins/build/plugins)
+and [hook events/trust](https://learn.chatgpt.com/docs/hooks).
 
 `claude --plugin-dir <this folder>` loads the mod for one session.
 
